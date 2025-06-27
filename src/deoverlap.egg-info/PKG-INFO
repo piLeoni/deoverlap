@@ -69,9 +69,9 @@ The core of this module is the `deoverlap` function. It takes an iterable of Sha
 
 ### Basic Usage: Flat Mode
 
-The default mode of operation is the "flat" mode (`preserve_types=False`). This mode is optimized for speed and returns a simple list of `LineString` and `Point` geometries. In this mode, any input `Polygon` objects are converted to their boundary `LineString`s.
+The default mode of operation is the "flat" mode (`preserve_types=False`). This mode is optimized for speed and returns a simple list of `LineString` and `Point` geometries. In this mode, any input `Polygon` objects are converted to their boundary `LineString`.
 
-Here's a simple example of de-overlapping two overlapping `LineString`s:
+Here's a simple example of de-overlapping two overlapping `LineString`:
 
 ```python
 from shapely.geometry import LineString
