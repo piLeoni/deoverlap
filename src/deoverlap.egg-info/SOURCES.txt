@@ -1,0 +1,12 @@
+LICENSE
+README.md
+pyproject.toml
+src/deoverlap/__init__.py
+src/deoverlap/deoverlap.py
+src/deoverlap.egg-info/PKG-INFO
+src/deoverlap.egg-info/SOURCES.txt
+src/deoverlap.egg-info/dependency_links.txt
+src/deoverlap.egg-info/requires.txt
+src/deoverlap.egg-info/top_level.txt
+tests/test_deoverlap.py
+tests/test_flatten_geometries.py

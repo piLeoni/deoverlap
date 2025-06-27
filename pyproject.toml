@@ -1,0 +1,41 @@
+# pyproject.toml
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deoverlap"
+version = "0.1.0"
+authors = [
+  { name="Pietro Leoni", email="pietro.leoni@gmail.com" },
+]
+description = "A high-level toolkit for de-overlapping Shapely geometries."
+readme = "README.md"
+license = { file="LICENSE" }
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "shapely>=2.0",
+    "tqdm"
+]
+
+[project.urls]
+Homepage = "https://github.com/piLeoni/deoverlap"
+"Bug Tracker" = "https://github.com/piLeoni/deoverlap"
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "matplotlib"
+]
