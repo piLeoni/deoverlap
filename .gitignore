@@ -27,9 +27,6 @@ htmlcov/
 nosetests.xml
 coverage.xml
 
-# Project-specific output files
-# Your plot_results function creates this folder.
-test_outputs/
 
 # IDE / Editor configuration
 .vscode/
