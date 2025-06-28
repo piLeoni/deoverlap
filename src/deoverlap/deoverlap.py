@@ -81,6 +81,7 @@ def _deoverlap_flat_engine(
     geometries: GeomInput,
     tolerance: float,
     progress_bar: bool,
+    mask: List[Polygon] = None
 ) -> Tuple[FlatGeomOutput, FlatGeomOutput, list]:
     """
     Internal engine for fast, flat de-overlapping.
@@ -92,6 +93,7 @@ def _deoverlap_flat_engine(
         geometries: The input geometries to de-overlap.
         tolerance: The buffer distance to define the overlap area.
         progress_bar: Whether to display a tqdm progress bar.
+        mask (optional): An existing list of mask polygons to start with.
 
     Returns:
         A tuple containing:
@@ -99,7 +101,9 @@ def _deoverlap_flat_engine(
             - A flat list of the removed (overlapping) geometries.
             - The list of mask polygons used for clipping.
     """
-    mask, flat_geoms, kept_geoms, removed_geoms = [], flatten_geometries(geometries), [], []
+    # Initialize the mask, using a copy of the provided mask if it exists.
+    current_mask = [] if mask is None else mask[:]
+    flat_geoms, kept_geoms, removed_geoms = flatten_geometries(geometries), [], []
     
     # A tiny buffer used to resolve floating-point ambiguities. When geometries
     # are perfectly aligned, a simple `.difference()` can be inconsistent.
@@ -111,33 +115,34 @@ def _deoverlap_flat_engine(
     for geom in iterable:
         kept_portion = geom
         
-        # Only perform clipping if a mask has been built up from previous geometries.
-        if mask:
+        # Only perform clipping if a mask has been built up.
+        if current_mask:
             # Use an STRtree for efficient spatial querying of nearby mask polygons.
             # This is much faster than checking against the entire mask every time.
-            tree = STRtree(mask)
+            tree = STRtree(current_mask)
             if (nearby_indices := tree.query(geom)).size > 0:
                 # Create a local mask from only the relevant nearby polygons.
-                local_mask = union_all([mask[i] for i in nearby_indices])
+                local_mask = union_all([current_mask[i] for i in nearby_indices])
                 # The core operation: clip the geometry by the buffered local mask.
                 kept_portion = geom.difference(local_mask.buffer(ROBUSTNESS_BUFFER))
         
         # Add the kept portion to the results and update the master mask for the next iteration.
         if not kept_portion.is_empty:
             kept_geoms.append(kept_portion)
-            mask.append(kept_portion.buffer(tolerance))
+            current_mask.append(kept_portion.buffer(tolerance))
         
         # The removed portion is simply what's left of the original after the difference.
         if not (removed_portion := geom.difference(kept_portion)).is_empty:
             removed_geoms.append(removed_portion)
             
     # Return flattened lists, as difference operations can create multi-part geometries.
-    return flatten_geometries(kept_geoms), flatten_geometries(removed_geoms), mask
+    return flatten_geometries(kept_geoms), flatten_geometries(removed_geoms), current_mask
 
 def _deoverlap_structured_engine(
     geometries: Iterable[BaseGeometry],
     tolerance: float,
     progress_bar: bool,
+    mask: List[Polygon] = None,
 ) -> Tuple[List[BaseGeometry], Dict[int, List[BaseGeometry]], Dict[int, List[BaseGeometry]], List[int], List[Polygon]]:
     """
     Internal engine for structure-preserving de-overlapping with origin tracking.
@@ -149,6 +154,7 @@ def _deoverlap_structured_engine(
         geometries: The input geometries to de-overlap.
         tolerance: The buffer distance to define the overlap area.
         progress_bar: Whether to display a tqdm progress bar.
+        mask (optional): An existing list of mask polygons to start with.
 
     Returns:
         A tuple containing:
@@ -158,7 +164,9 @@ def _deoverlap_structured_engine(
             - A list of indices of geometries that were wholly removed.
             - The list of mask polygons used for clipping.
     """
-    kept_results, kept_parts_map, removed_parts_map, wholly_removed_indices, mask = [], {}, {}, [], []
+    # Initialize the mask, using a copy of the provided mask if it exists.
+    current_mask = [] if mask is None else mask[:]
+    kept_results, kept_parts_map, removed_parts_map, wholly_removed_indices = [], {}, {}, []
     ROBUSTNESS_BUFFER = 1e-9
 
     iterable = tqdm(list(geometries), desc="De-overlapping (structured)", disable=not progress_bar)
@@ -173,15 +181,15 @@ def _deoverlap_structured_engine(
         if not parts_to_process: continue
 
         kept_sub_parts = []
-        if not mask:
+        if not current_mask:
             # If the mask is empty (i.e., this is the first geometry), keep all parts.
             kept_sub_parts = parts_to_process
         else:
             # Check each constituent part against the cumulative mask.
-            tree = STRtree(mask)
+            tree = STRtree(current_mask)
             for part in parts_to_process:
                 if (nearby_indices := tree.query(part)).size > 0:
-                    local_mask = union_all([mask[i] for i in nearby_indices])
+                    local_mask = union_all([current_mask[i] for i in nearby_indices])
                     if not (kept_part := part.difference(local_mask.buffer(ROBUSTNESS_BUFFER))).is_empty:
                         kept_sub_parts.append(kept_part)
                 else: # Part is not near any existing mask geometry, so it's kept entirely.
@@ -217,9 +225,9 @@ def _deoverlap_structured_engine(
              removed_parts_map.setdefault(i, []).append(removed_portion)
         
         # Update the master mask with the buffer of the geometry that was *actually kept*.
-        mask.append(reassembled_kept_geom.buffer(tolerance))
+        current_mask.append(reassembled_kept_geom.buffer(tolerance))
         
-    return kept_results, kept_parts_map, removed_parts_map, wholly_removed_indices, mask
+    return kept_results, kept_parts_map, removed_parts_map, wholly_removed_indices, current_mask
 
 # =============================================================================
 #  Single Public-Facing Function
@@ -232,6 +240,7 @@ def deoverlap(
     keep_duplicates: bool = False,
     track_origins: bool = False,
     progress_bar: bool = False,
+    mask: List[Polygon] = None
 ) -> Any:
     """De-overlaps a list of geometries, with extensive options for output format.
 
@@ -255,25 +264,34 @@ def deoverlap(
         progress_bar (bool, optional):
             If `True`, displays a tqdm progress bar during processing.
             Defaults to False.
+        mask (List[Polygon], optional):
+            An optional, pre-existing list of polygon masks. If provided,
+            geometries will be de-overlapped against this mask first. This is
+            useful for iterative processing or for ensuring consistency across
+            multiple, separate calls. The returned mask will include these
+            initial polygons. Defaults to None.
 
     Returns:
         The return type is dynamic and depends on the flags:
         - `preserve_types=False`:
-          `(kept_geoms, kept_map, removed_geoms, mask)` where `kept_map` is empty.
+          A tuple `(kept_geoms, {}, removed_geoms, mask)`.
         - `preserve_types=True` and `track_origins=False`:
-          `(kept_geoms, kept_map, removed_geoms, mask)`
+          A tuple `(kept_geoms, kept_map, removed_geoms, mask)`.
         - `preserve_types=True` and `track_origins=True`:
           A dictionary with keys `("kept", "kept_parts", "removed_parts",
           "wholly_removed_indices", "mask")`.
     """
     # --- Mode 1: Fast, Flat Output ---
     if not preserve_types:
-        kept, removed, mask = _deoverlap_flat_engine(geometries, tolerance, progress_bar)
-        # Return a consistent 4-item tuple for predictable unpacking in tests.
-        return kept, {}, (removed if keep_duplicates else []), mask
+        kept, removed, final_mask = _deoverlap_flat_engine(
+            geometries, tolerance, progress_bar, mask=mask
+        )
+        return kept, {}, (removed if keep_duplicates else []), final_mask
     
     # --- Mode 2: Structure-Preserving Output ---
-    kept, kept_map, removed_map, wholly_removed, mask = _deoverlap_structured_engine(geometries, tolerance, progress_bar)
+    kept, kept_map, removed_map, wholly_removed, final_mask = _deoverlap_structured_engine(
+        geometries, tolerance, progress_bar, mask=mask
+    )
     
     # Sub-mode: Return the detailed dictionary with full origin tracking.
     if track_origins:
@@ -282,7 +300,7 @@ def deoverlap(
             "kept_parts": kept_map,
             "removed_parts": (removed_map if keep_duplicates else {}),
             "wholly_removed_indices": wholly_removed,
-            "mask": mask
+            "mask": final_mask
         }
     else:
         # Sub-mode: Return a simplified tuple for compatibility.
@@ -290,4 +308,4 @@ def deoverlap(
         if keep_duplicates:
             for parts in removed_map.values():
                 removed_list.extend(parts)
-        return kept, kept_map, removed_list, mask
+        return kept, kept_map, removed_list, final_mask

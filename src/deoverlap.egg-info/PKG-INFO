@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: deoverlap
-Version: 0.1.1
+Version: 0.2.0
 Summary: A high-level toolkit for de-overlapping Shapely geometries.
 Author-email: Pietro Leoni <pietro.leoni@gmail.com>
 License: MIT License
@@ -93,6 +93,7 @@ The `deoverlap` function offers several parameters to control its behavior:
 - `preserve_types` (`bool`): When `True`, the function will attempt to preserve the original geometry types (e.g., `Polygon`, `MultiLineString`). This is more computationally intensive but provides a more structured output.
 - `keep_duplicates` (`bool`): If `True`, the function will also return the portions of the geometries that were removed due to overlap.
 - `track_origins` (`bool`): Only applicable when `preserve_types=True`. If `True`, the output is a dictionary that maps the removed parts to their original index in the input list. This is useful for understanding which original geometries were affected by the de-overlapping process.
+- `mask` (`List[Polygon]`, optional): An optional, pre-existing list of polygon masks. If provided, geometries will be de-overlapped against this mask first. This is useful for iterative processing or for ensuring consistency across multiple, separate calls. The returned mask will include these initial polygons.
 
 ![](test_outputs/test_tangent_circles_and_line_s_T_k_T.png)
 ### Preserving Geometry Types
@@ -112,6 +113,39 @@ Set `keep_duplicates=True` to get a list of the geometries (or portions of geome
 
 - `keep_duplicates=False` (default):
 - `keep_duplicates=True` (showing removed parts):
+
+### Multi-Stage Processing with Mask
+
+The `mask` parameter enables multi-stage processing by allowing you to pass pre-existing mask polygons. This is particularly useful when you need to process geometries in batches while maintaining consistency across all stages.
+
+**Example:** Processing geometries in multiple stages:
+
+```python
+from shapely.geometry import LineString, Polygon
+from deoverlap import deoverlap
+
+# Stage 1: Process first batch
+batch1 = [LineString([(0, 0), (2, 0)]), LineString([(1, 0.05), (3, 0.05)])]
+tolerance = 0.1
+
+kept1, _, removed1, mask1 = deoverlap(batch1, tolerance, keep_duplicates=True)
+
+# Stage 2: Process second batch using the mask from stage 1
+batch2 = [LineString([(2, 0.1), (4, 0.1)]), LineString([(3, 0.15), (5, 0.15)])]
+
+kept2, _, removed2, final_mask = deoverlap(
+    batch2, 
+    tolerance, 
+    keep_duplicates=True,
+    mask=mask1  # Use the mask from the previous stage
+)
+
+print(f"Stage 1 kept: {len(kept1)}, removed: {len(removed1)}")
+print(f"Stage 2 kept: {len(kept2)}, removed: {len(removed2)}")
+print(f"Final mask contains {len(final_mask)} polygons")
+```
+
+This approach ensures that geometries in the second batch are de-overlapped against both their own batch and the geometries from the first batch, maintaining complete consistency across the entire processing pipeline.
 
 ### Tracking the Origin of Removed Parts
 
@@ -162,7 +196,7 @@ The `deoverlap` function can handle a mix of geometry types, including Polygons.
 
 ## API Reference
 
-### `deoverlap(geometries, tolerance, preserve_types=False, keep_duplicates=False, track_origins=False, progress_bar=False)`
+### `deoverlap(geometries, tolerance, preserve_types=False, keep_duplicates=False, track_origins=False, progress_bar=False, mask=None)`
 
 De-overlaps a list of geometries with extensive options for output format and origin tracking.
 
@@ -176,6 +210,7 @@ De-overlaps a list of geometries with extensive options for output format and or
 - `keep_duplicates` (`bool`, optional): If `True`, the removed/overlapping portions are returned. Defaults to `False`.
 - `track_origins` (`bool`, optional): Only applies when `preserve_types=True`. If `True`, returns a detailed dictionary mapping removed parts to their original index. Defaults to `False`.
 - `progress_bar` (`bool`, optional): If `True`, displays a tqdm progress bar. Defaults to `False`.
+- `mask` (`List[Polygon]`, optional): An optional, pre-existing list of polygon masks. If provided, geometries will be de-overlapped against this mask first. This is useful for iterative processing or for ensuring consistency across multiple, separate calls. The returned mask will include these initial polygons. Defaults to `None`.
 
 #### Returns:
 
