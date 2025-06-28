@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deoverlap"
-version = "1.0.0"
+version = "1.0.1"
 authors = [
   { name="Pietro Leoni", email="pietro.leoni@gmail.com" },
 ]
@@ -31,8 +31,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/piLeoni/deoverlap"
-"Bug Tracker" = "https://github.com/piLeoni/deoverlap"
+Homepage = "https://github.com/piLeoni/deoverlap/tree/legacy-shapely-1.8"
+"Bug Tracker" = "https://github.com/piLeoni/deoverlap/tree/legacy-shapely-1.8"
 
 [project.optional-dependencies]
 test = [

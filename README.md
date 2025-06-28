@@ -2,7 +2,7 @@
 
 A high-level Python module for de-overlapping a set of Shapely geometric objects. It offers two main modes of operation: a fast "flat" mode that returns simple geometries, and a more powerful "structured" mode that preserves geometry types and can track the origin of removed pieces.
 
-![](https://github.com/piLeoni/deoverlap/raw/main/test_outputs/test_tangent_circles_and_line_s_T_k_T.png)
+![](https://github.com/piLeoni/deoverlap/raw/main/test_outputs/test_tangent_circles_and_line_s_F_k_T.png)
 
 ## Version Compatibility
 
@@ -68,7 +68,7 @@ The `deoverlap` function offers several parameters to control its behavior:
 - `track_origins` (`bool`): Only applicable when `preserve_types=True`. If `True`, the output is a dictionary that maps the removed parts to their original index in the input list. This is useful for understanding which original geometries were affected by the de-overlapping process.
 - `mask` (`List[Polygon]`, optional): An optional, pre-existing list of polygon masks. If provided, geometries will be de-overlapped against this mask first. This is useful for iterative processing or for ensuring consistency across multiple, separate calls. The returned mask will include these initial polygons.
 
-![](https://github.com/piLeoni/deoverlap/raw/main/test_outputs/test_tangent_circles_and_line_s_F_k_T.png)
+![](https://github.com/piLeoni/deoverlap/raw/main/test_outputs/test_tangent_circles_and_line_s_T_k_T.png)
 ### Preserving Geometry Types
 
 Set `preserve_types=True` to maintain the original geometry types in the output. This is particularly useful when working with Polygons or when you need to maintain the distinction between single and multi-part geometries.
