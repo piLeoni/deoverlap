@@ -3,13 +3,10 @@ This module provides high-level functions for de-overlapping a set of Shapely
 geometric objects. It intelligently removes portions of geometries that are
 within a specified tolerance of geometries earlier in the processing order.
 
-It offers two main modes of operation: a fast "flat" mode that returns simple
-geometries (Points and LineStrings), and a more powerful "structured" mode that
-preserves geometry types and can track the origin of removed pieces.
+This version is specifically adapted for compatibility with Shapely < 2.0.
 """
 
 from typing import List, Union, Iterable, Tuple, Dict, Any
-from shapely import union_all
 from shapely.ops import unary_union
 from shapely.strtree import STRtree
 from tqdm import tqdm
@@ -48,7 +45,7 @@ def flatten_geometries(geoms: GeomInput) -> FlatGeomOutput:
     out = []
     if geoms is None: return out
 
-    # Use modern pattern matching for clear, type-safe dispatching.
+    # Use pattern matching for clear, type-safe dispatching.
     match geoms:
         case LineString() | Point():
             if not geoms.is_empty: out.append(geoms)
@@ -118,11 +115,12 @@ def _deoverlap_flat_engine(
         # Only perform clipping if a mask has been built up.
         if current_mask:
             # Use an STRtree for efficient spatial querying of nearby mask polygons.
-            # This is much faster than checking against the entire mask every time.
             tree = STRtree(current_mask)
-            if (nearby_indices := tree.query(geom)).size > 0:
-                # Create a local mask from only the relevant nearby polygons.
-                local_mask = union_all([current_mask[i] for i in nearby_indices])
+            # In Shapely 1.8, query() returns a list of GEOMETRIES, not indices.
+            nearby_geoms = tree.query(geom)
+            if nearby_geoms:
+                # Create a local mask from the returned nearby geometries.
+                local_mask = unary_union(nearby_geoms)
                 # The core operation: clip the geometry by the buffered local mask.
                 kept_portion = geom.difference(local_mask.buffer(ROBUSTNESS_BUFFER))
         
@@ -188,8 +186,11 @@ def _deoverlap_structured_engine(
             # Check each constituent part against the cumulative mask.
             tree = STRtree(current_mask)
             for part in parts_to_process:
-                if (nearby_indices := tree.query(part)).size > 0:
-                    local_mask = union_all([current_mask[i] for i in nearby_indices])
+                # In Shapely 1.8, query() returns a list of GEOMETRIES, not indices.
+                nearby_geoms = tree.query(part)
+                if nearby_geoms:
+                    # Create a local mask from the returned nearby geometries.
+                    local_mask = unary_union(nearby_geoms)
                     if not (kept_part := part.difference(local_mask.buffer(ROBUSTNESS_BUFFER))).is_empty:
                         kept_sub_parts.append(kept_part)
                 else: # Part is not near any existing mask geometry, so it's kept entirely.

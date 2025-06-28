@@ -5,7 +5,8 @@ from typing import Union, Iterable
 from itertools import cycle
 import matplotlib.pyplot as plt
 import numpy as np
-from shapely import union_all
+# Use unary_union for Shapely 1.8 compatibility
+from shapely.ops import unary_union
 from shapely.geometry import (LineString, Point, MultiLineString,
                              Polygon, MultiPolygon, GeometryCollection)
 from shapely.geometry.base import BaseGeometry
@@ -88,7 +89,7 @@ def plot_results(input_geoms: GeomInput, kept_items: dict, removed_items: Union[
         return ""
 
     # --- Set plot bounds (unchanged) ---
-    if flat_inputs := flatten_geometries(input_geoms_list):
+    if (flat_inputs := flatten_geometries(input_geoms_list)):
         all_bounds = [g.bounds for g in flat_inputs if not g.is_empty]
         if all_bounds:
             min_x, min_y, max_x, max_y = (min(b[0] for b in all_bounds), min(b[1] for b in all_bounds),
@@ -106,7 +107,8 @@ def plot_results(input_geoms: GeomInput, kept_items: dict, removed_items: Union[
     color_cycler = cycle(active_palette)
     structured_colors = {i: next(color_cycler) for i in range(len(input_geoms_list))}
 
-    if mask and not (full_mask := union_all(mask)).is_empty:
+    # Updated to use unary_union for Shapely 1.8
+    if mask and not (full_mask := unary_union(mask)).is_empty:
         for poly in getattr(full_mask, 'geoms', [full_mask]):
             if isinstance(poly, Polygon):
                 ax.plot(*poly.exterior.xy, color=FLAT_MODE_COLORS["mask"], linewidth=0.5, label=add_to_legend('Mask Outline'), zorder=1)
@@ -129,7 +131,8 @@ def plot_results(input_geoms: GeomInput, kept_items: dict, removed_items: Union[
                 elif k_geom.geom_type == 'Point':
                     ax.plot(k_geom.x, k_geom.y, 'o', color=color, markersize=8, label=add_to_legend(f'Kept from {i}'), zorder=5)
     else: # Flat mode
-        flat_kept = list(kept_items.values())[0]
+        # In flat mode, kept_items is {0: [geoms]}. We just need the list of geoms.
+        flat_kept = list(kept_items.values())[0] if kept_items else []
         for g in flatten_geometries(flat_kept):
             if g.geom_type == 'LineString':
                 ax.plot(*g.xy, color=FLAT_MODE_COLORS["kept"], linewidth=2.5, label=add_to_legend('Kept'), zorder=4, alpha=0.75, solid_capstyle='round')
@@ -167,7 +170,7 @@ def plot_results(input_geoms: GeomInput, kept_items: dict, removed_items: Union[
 
 
 # =============================================================================
-#  Comprehensive Test Suite (Unchanged)
+#  Comprehensive Test Suite
 # =============================================================================
 
 @pytest.mark.parametrize("preserve_types", [True, False])

@@ -2,7 +2,20 @@
 
 A high-level Python module for de-overlapping a set of Shapely geometric objects. It offers two main modes of operation: a fast "flat" mode that returns simple geometries, and a more powerful "structured" mode that preserves geometry types and can track the origin of removed pieces.
 
-![](test_outputs/test_tangent_circles_and_line_s_F_k_T.png)
+![](https://github.com/piLeoni/deoverlap/raw/main/test_outputs/test_tangent_circles_and_line_s_T_k_T.png)
+
+## Version Compatibility
+
+This is the **legacy version** of `deoverlap` designed for compatibility with **Shapely 1.8.x** and **Python 3.11 or earlier**.
+
+- **For Shapely 2.0+**: Use `deoverlap>=0.2.0`
+- **For Shapely 1.8.x**: Use `deoverlap>=1.0.0` (this version)
+
+### Requirements
+- **Python**: 3.11 or earlier (due to Shapely 1.8.x compatibility)
+- **Shapely**: >=1.8.2, <2.0
+- **tqdm**: For progress bars
+
 ## Motivation
 
 When working with geospatial data, it's common to encounter datasets where geometries (such as lines representing roads or polygons representing land parcels) overlap one another. For many analysis and visualization tasks, it is desirable to remove these overlaps, ensuring that each point in space is covered by at most one geometry. This process, which we call "de-overlapping," can be complex to implement efficiently.
@@ -11,11 +24,17 @@ This module provides a robust and easy-to-use solution for de-overlapping Shapel
 
 ## Installation
 
-You can install `deoverlap` directly from PyPI using pip:
-
+### For Shapely 1.8.x (Legacy)
 ```bash
-pip install deoverlap
+pip install "deoverlap>=1.0.0"
 ```
+
+### For Shapely 2.0+ (Modern)
+```bash
+pip install "deoverlap>=0.2.0"
+```
+
+**Note**: Make sure you have the appropriate Shapely version installed for your use case.
 
 ## How to Use
 
@@ -49,7 +68,7 @@ The `deoverlap` function offers several parameters to control its behavior:
 - `track_origins` (`bool`): Only applicable when `preserve_types=True`. If `True`, the output is a dictionary that maps the removed parts to their original index in the input list. This is useful for understanding which original geometries were affected by the de-overlapping process.
 - `mask` (`List[Polygon]`, optional): An optional, pre-existing list of polygon masks. If provided, geometries will be de-overlapped against this mask first. This is useful for iterative processing or for ensuring consistency across multiple, separate calls. The returned mask will include these initial polygons.
 
-![](test_outputs/test_tangent_circles_and_line_s_T_k_T.png)
+![](https://github.com/piLeoni/deoverlap/raw/main/test_outputs/test_tangent_circles_and_line_s_F_k_T.png)
 ### Preserving Geometry Types
 
 Set `preserve_types=True` to maintain the original geometry types in the output. This is particularly useful when working with Polygons or when you need to maintain the distinction between single and multi-part geometries.
