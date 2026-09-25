@@ -1,6 +1,22 @@
-"""
-A Python toolkit for resolving overlaps in 2D vector geometries.
-"""
-__version__ = "2.0.0"
+"""De-overlap Shapely geometries that sit within a tolerance of each other."""
 
-from .deoverlap import deoverlap, flatten_geometries, GeomInput
+__version__ = "3.1.0"
+
+from .deoverlap import (
+    ClipMode,
+    DeoverlapResult,
+    GeomInput,
+    KeepPolicy,
+    deoverlap,
+    flatten_geometries,
+)
+
+__all__ = [
+    "ClipMode",
+    "DeoverlapResult",
+    "GeomInput",
+    "KeepPolicy",
+    "deoverlap",
+    "flatten_geometries",
+    "__version__",
+]

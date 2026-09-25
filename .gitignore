@@ -19,6 +19,7 @@ build/
 dist/
 *.egg-info/
 *.egg
+src/*.egg-info/
 
 # Testing & Coverage
 .pytest_cache/

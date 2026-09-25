@@ -1,6 +1,0 @@
-shapely>=2.0
-tqdm
-
-[test]
-pytest
-matplotlib

@@ -6,11 +6,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deoverlap"
-version = "2.0.0"
+version = "3.1.0"
 authors = [
   { name="Pietro Leoni", email="pietro.leoni@gmail.com" },
 ]
-description = "A high-level toolkit for de-overlapping Shapely geometries."
+description = "De-overlap Shapely geometries that sit within a tolerance of each other."
 readme = "README.md"
 license = { file="LICENSE" }
 requires-python = ">=3.10"
@@ -27,15 +27,28 @@ classifiers = [
 
 dependencies = [
     "shapely>=2.0",
-    "tqdm"
+    "tqdm",
+]
+
+[project.optional-dependencies]
+vpype = [
+    "vpype>=1.13",
+]
+test = [
+    "pytest",
+    "matplotlib",
+    "vpype>=1.13",
 ]
 
 [project.urls]
 Homepage = "https://github.com/piLeoni/deoverlap"
-"Bug Tracker" = "https://github.com/piLeoni/deoverlap"
+"Bug Tracker" = "https://github.com/piLeoni/deoverlap/issues"
 
-[project.optional-dependencies]
-test = [
-    "pytest",
-    "matplotlib"
-]
+[project.entry-points."vpype.plugins"]
+deoverlap = "deoverlap.vpype_plugin:deoverlap_cmd"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,311 +1,671 @@
-"""
-This module provides high-level functions for de-overlapping a set of Shapely
-geometric objects. It intelligently removes portions of geometries that are
-within a specified tolerance of geometries earlier in the processing order.
+"""De-overlap Shapely geometries that sit within a tolerance of each other.
 
-It offers two main modes of operation: a fast "flat" mode that returns simple
-geometries (Points and LineStrings), and a more powerful "structured" mode that
-preserves geometry types and can track the origin of removed pieces.
+The engine walks geometries in priority order. Each kept piece contributes a
+buffered *mask*; later pieces are cropped (or dropped) where they fall inside
+that mask. That is the right model for pen plotters: strokes closer than a pen
+width visually merge, so only one of them should keep the ink.
+
+``segments=True`` (self-overlap) splits every path into edge segments first, so
+two sides of a thin road outline — one continuous LineString — can still
+suppress each other. Adjacent segments on the same chain are excluded so joints
+are not nibbled.
+
+Pieces that came from the same input stay grouped (``MultiLineString`` etc.)
+unless ``group=False``.
 """
 
-from typing import List, Union, Iterable, Tuple, Dict, Any
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Iterable, Iterator, List, Optional, Sequence, Union
+
 from shapely import union_all
-from shapely.ops import unary_union
-from shapely.strtree import STRtree
-from tqdm import tqdm
 from shapely.geometry import (
-    LineString, Point, MultiLineString, MultiPoint,
-    Polygon, MultiPolygon, GeometryCollection
+    GeometryCollection,
+    LineString,
+    MultiLineString,
+    MultiPoint,
+    MultiPolygon,
+    Point,
+    Polygon,
 )
 from shapely.geometry.base import BaseGeometry
+from shapely.ops import unary_union
+from shapely.strtree import STRtree
+
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover
+    tqdm = None  # type: ignore
 
 # =============================================================================
-#  Type Aliases
-# =============================================================================
-# Using type aliases for better readability and maintainability of type hints.
-GeomInput = Union[BaseGeometry, Iterable['GeomInput']]
-FlatGeomOutput = List[Union[LineString, Point]]
-
-# =============================================================================
-#  Helper Function
+#  Public types
 # =============================================================================
 
-def flatten_geometries(geoms: GeomInput) -> FlatGeomOutput:
-    """
-    Recursively flattens any geometry input into a flat list of non-empty
-    LineStrings and Points.
+GeomInput = Union[BaseGeometry, Iterable["GeomInput"]]
+FlatGeom = Union[LineString, Point]
 
-    This utility is used to decompose complex geometries into a simple,
-    standardized format that the de-overlapping engines can process.
 
-    Args:
-        geoms: A Shapely geometry or a nested iterable of geometries.
+class KeepPolicy(str, Enum):
+    """Which geometry wins when two corridors collide."""
 
-    Returns:
-        A flat list of simple Point and LineString geometries. Polygons are
-        converted to their exterior and interior boundary LineStrings.
-    """
-    out = []
-    if geoms is None: return out
+    FIRST = "first"
+    LONGEST = "longest"
+    SHORTEST = "shortest"
 
-    # Use modern pattern matching for clear, type-safe dispatching.
-    match geoms:
-        case LineString() | Point():
-            if not geoms.is_empty: out.append(geoms)
-        case MultiLineString() | MultiPoint() | GeometryCollection():
-            # Recursively flatten all geometries within a collection.
-            for g in geoms.geoms: out.extend(flatten_geometries(g))
-        case Polygon():
-            # Convert Polygons to their constituent rings (LineStrings).
-            if not geoms.is_empty:
-                out.append(LineString(geoms.exterior.coords))
-                for ring in geoms.interiors: out.append(LineString(ring.coords))
-        case MultiPolygon():
-            # Handle MultiPolygons by flattening each Polygon individually.
-            for poly in geoms.geoms: out.extend(flatten_geometries(poly))
-        case list() | tuple() | set():
-            # Handle standard iterable types.
-            for g in geoms: out.extend(flatten_geometries(g))
-        case _:
-            # Fallback for any other type that is a valid Shapely geometry
-            # but not explicitly listed above. This provides some future-proofing.
-            if not isinstance(geoms, BaseGeometry):
-                 raise TypeError(f"Unsupported geometry type: {type(geoms)}")
+
+class ClipMode(str, Enum):
+    CROP = "crop"
+    DROP = "drop"
+
+
+@dataclass(frozen=True)
+class _SegId:
+    """Identity of one exploded edge, for self-overlap adjacency checks."""
+
+    chain: int
+    index: int
+    count: int
+    closed: bool
+
+
+@dataclass
+class DeoverlapResult:
+    kept: List[BaseGeometry] = field(default_factory=list)
+    removed: List[BaseGeometry] = field(default_factory=list)
+    kept_parts: dict[int, BaseGeometry] = field(default_factory=dict)
+    removed_parts: dict[int, BaseGeometry] = field(default_factory=dict)
+    wholly_removed: List[int] = field(default_factory=list)
+    mask: List[Polygon] = field(default_factory=list)
+
+    def __iter__(self) -> Iterator:
+        kept_map = {i: [g] for i, g in self.kept_parts.items()}
+        yield self.kept
+        yield kept_map
+        yield self.removed
+        yield self.mask
+
+
+# =============================================================================
+#  Geometry helpers
+# =============================================================================
+
+_ROBUSTNESS_BUFFER = 1e-9
+
+
+def flatten_geometries(geoms: GeomInput) -> List[FlatGeom]:
+    out: List[FlatGeom] = []
+    if geoms is None:
+        return out
+
+    if isinstance(geoms, (LineString, Point)):
+        if not geoms.is_empty:
+            out.append(geoms)
+    elif isinstance(geoms, (MultiLineString, MultiPoint, GeometryCollection)):
+        for g in geoms.geoms:
+            out.extend(flatten_geometries(g))
+    elif isinstance(geoms, Polygon):
+        if not geoms.is_empty:
+            out.append(LineString(geoms.exterior.coords))
+            for ring in geoms.interiors:
+                out.append(LineString(ring.coords))
+    elif isinstance(geoms, MultiPolygon):
+        for poly in geoms.geoms:
+            out.extend(flatten_geometries(poly))
+    elif isinstance(geoms, (list, tuple, set)):
+        for g in geoms:
+            out.extend(flatten_geometries(g))
+    elif isinstance(geoms, BaseGeometry):
+        pass
+    else:
+        raise TypeError(f"Unsupported geometry type: {type(geoms)}")
     return out
 
+
+def _as_list(geometries: GeomInput) -> List[BaseGeometry]:
+    if isinstance(geometries, BaseGeometry):
+        return [geometries]
+    return [g for g in geometries if isinstance(g, BaseGeometry)]
+
+
+def _length(geom: BaseGeometry) -> float:
+    if geom is None or geom.is_empty:
+        return 0.0
+    if isinstance(geom, Point):
+        return 0.0
+    try:
+        return float(geom.length)
+    except Exception:
+        return 0.0
+
+
+def _dedupe_coords(coords: Sequence[Sequence[float]]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for c in coords:
+        pt = (float(c[0]), float(c[1]))
+        if not out or out[-1] != pt:
+            out.append(pt)
+    return out
+
+
+def _line_angle(geom: BaseGeometry) -> Optional[float]:
+    if isinstance(geom, (Polygon, MultiPolygon, Point, MultiPoint)):
+        return None
+    if isinstance(geom, LineString) and len(geom.coords) >= 2:
+        x0, y0 = geom.coords[0]
+        x1, y1 = geom.coords[-1]
+        return math.atan2(y1 - y0, x1 - x0) % math.pi
+    parts = flatten_geometries(geom)
+    line = max(
+        (p for p in parts if isinstance(p, LineString) and len(p.coords) >= 2),
+        key=lambda p: p.length,
+        default=None,
+    )
+    if line is None:
+        return None
+    x0, y0 = line.coords[0]
+    x1, y1 = line.coords[-1]
+    return math.atan2(y1 - y0, x1 - x0) % math.pi
+
+
+def _angle_diff(a: float, b: float) -> float:
+    d = abs(a - b) % math.pi
+    return min(d, math.pi - d)
+
+
+def _seg_adjacent(a: _SegId, b: _SegId, window: int) -> bool:
+    """True if ``a`` and ``b`` are neighbours on the same exploded chain."""
+    if a.chain != b.chain or window < 0:
+        return False
+    n = a.count
+    d = abs(a.index - b.index)
+    if d <= window:
+        return True
+    if a.closed and n > 2 and (n - d) <= window:
+        return True
+    return False
+
+
+def _reassemble(parts: Sequence[BaseGeometry], original: BaseGeometry) -> BaseGeometry:
+    clean = [p for p in parts if p is not None and not p.is_empty]
+    if not clean:
+        return LineString()
+    merged = unary_union(clean)
+    if (
+        original.geom_type == "Polygon"
+        and not merged.is_empty
+        and merged.equals(original.boundary)
+    ):
+        return original
+    return merged
+
+
+def _filter_min_length(geom: BaseGeometry, min_length: float) -> BaseGeometry:
+    if min_length <= 0 or geom.is_empty:
+        return geom
+    if isinstance(geom, Point):
+        return geom
+    if isinstance(geom, LineString):
+        return geom if geom.length >= min_length else LineString()
+    if isinstance(geom, MultiLineString):
+        kept = [g for g in geom.geoms if g.length >= min_length]
+        if not kept:
+            return MultiLineString()
+        if len(kept) == 1:
+            return kept[0]
+        return MultiLineString(kept)
+    if isinstance(geom, GeometryCollection):
+        kept = []
+        for g in geom.geoms:
+            f = _filter_min_length(g, min_length)
+            if not f.is_empty:
+                kept.append(f)
+        return unary_union(kept) if kept else GeometryCollection()
+    return geom
+
+
+def _split_removed(original: BaseGeometry, kept: BaseGeometry) -> BaseGeometry:
+    source = original.boundary if isinstance(original, (Polygon, MultiPolygon)) else original
+    if source.is_empty:
+        return source
+    if kept.is_empty:
+        return source
+    return source.difference(kept)
+
+
+def _explode_segments(
+    geoms: Sequence[BaseGeometry],
+) -> tuple[list[LineString], list[int], list[_SegId], list[float]]:
+    """Split every lineal geometry into 2-point edges.
+
+    Returns segments, original-index per segment, segment ids, and the parent
+    geometry length (for keep-policy sorting).
+    """
+    segments: list[LineString] = []
+    origins: list[int] = []
+    seg_ids: list[_SegId] = []
+    parent_lengths: list[float] = []
+    chain = 0
+
+    for origin, geom in enumerate(geoms):
+        parent_len = _length(geom)
+        for part in flatten_geometries(geom):
+            if isinstance(part, Point) or len(part.coords) < 2:
+                continue
+            coords = _dedupe_coords(part.coords)
+            if len(coords) < 2:
+                continue
+            closed = len(coords) > 2 and coords[0] == coords[-1]
+            if closed:
+                coords = coords[:-1]
+            if len(coords) < 2:
+                continue
+            if closed:
+                count = len(coords)
+                for i in range(count):
+                    a, b = coords[i], coords[(i + 1) % count]
+                    if a == b:
+                        continue
+                    segments.append(LineString([a, b]))
+                    origins.append(origin)
+                    seg_ids.append(_SegId(chain, i, count, True))
+                    parent_lengths.append(parent_len)
+            else:
+                count = len(coords) - 1
+                for i in range(count):
+                    a, b = coords[i], coords[i + 1]
+                    if a == b:
+                        continue
+                    segments.append(LineString([a, b]))
+                    origins.append(origin)
+                    seg_ids.append(_SegId(chain, i, count, False))
+                    parent_lengths.append(parent_len)
+            chain += 1
+
+    return segments, origins, seg_ids, parent_lengths
+
+
 # =============================================================================
-#  Internal Engine Functions
+#  Mask index
 # =============================================================================
 
-def _deoverlap_flat_engine(
-    geometries: GeomInput,
-    tolerance: float,
-    progress_bar: bool,
-    mask: List[Polygon] = None
-) -> Tuple[FlatGeomOutput, FlatGeomOutput, list]:
-    """
-    Internal engine for fast, flat de-overlapping.
 
-    This function prioritizes performance by working with a flattened list of
-    simple geometries. It always computes both the kept and removed portions.
+class _MaskIndex:
+    """Corridor polygons with a lazily rebuilt STRtree."""
 
-    Args:
-        geometries: The input geometries to de-overlap.
-        tolerance: The buffer distance to define the overlap area.
-        progress_bar: Whether to display a tqdm progress bar.
-        mask (optional): An existing list of mask polygons to start with.
+    def __init__(
+        self,
+        initial: Optional[Sequence[Polygon]] = None,
+        *,
+        rebuild_every: int = 32,
+        union_every: int = 64,
+        parallel_only: bool = False,
+        segment_adjacency: int = 1,
+    ) -> None:
+        self.polys: List[BaseGeometry] = list(initial) if initial else []
+        self.angles: List[Optional[float]] = [None] * len(self.polys)
+        self.seg_ids: List[Optional[_SegId]] = [None] * len(self.polys)
+        self.parallel_only = parallel_only
+        self.segment_adjacency = max(0, segment_adjacency)
+        self.rebuild_every = max(1, rebuild_every)
+        self.union_every = max(1, union_every)
+        self._since_rebuild = 0
+        self._since_union = 0
+        self._tree: Optional[STRtree] = None
+        # Identity tracking prevents mask dissolve (would lose angle / seg ids).
+        self._track_identity = parallel_only or segment_adjacency >= 0
+        if self.polys:
+            self._tree = STRtree(self.polys)
 
-    Returns:
-        A tuple containing:
-            - A flat list of the kept (non-overlapping) geometries.
-            - A flat list of the removed (overlapping) geometries.
-            - The list of mask polygons used for clipping.
-    """
-    # Initialize the mask, using a copy of the provided mask if it exists.
-    current_mask = [] if mask is None else mask[:]
-    flat_geoms, kept_geoms, removed_geoms = flatten_geometries(geometries), [], []
-    
-    # A tiny buffer used to resolve floating-point ambiguities. When geometries
-    # are perfectly aligned, a simple `.difference()` can be inconsistent.
-    # Buffering the clipping mask ensures robust results.
-    ROBUSTNESS_BUFFER = 1e-9
+    def add(
+        self,
+        geom: BaseGeometry,
+        tolerance: float,
+        angle: Optional[float],
+        seg_id: Optional[_SegId] = None,
+    ) -> None:
+        if geom.is_empty:
+            return
+        buf = geom.buffer(tolerance)
+        if buf.is_empty:
+            return
+        self.polys.append(buf)
+        self.angles.append(angle if self.parallel_only else None)
+        self.seg_ids.append(seg_id)
+        self._since_rebuild += 1
+        self._since_union += 1
+        self._tree = None
+        # Only dissolve when we are not tracking per-corridor identity.
+        if (
+            not self.parallel_only
+            and seg_id is None
+            and self._since_union >= self.union_every
+        ):
+            self._consolidate()
 
-    iterable = tqdm(flat_geoms, desc="De-overlapping (flat)", disable=not progress_bar)
-
-    for geom in iterable:
-        kept_portion = geom
-        
-        # Only perform clipping if a mask has been built up.
-        if current_mask:
-            # Use an STRtree for efficient spatial querying of nearby mask polygons.
-            # This is much faster than checking against the entire mask every time.
-            tree = STRtree(current_mask)
-            if (nearby_indices := tree.query(geom)).size > 0:
-                # Create a local mask from only the relevant nearby polygons.
-                local_mask = union_all([current_mask[i] for i in nearby_indices])
-                # The core operation: clip the geometry by the buffered local mask.
-                kept_portion = geom.difference(local_mask.buffer(ROBUSTNESS_BUFFER))
-        
-        # Add the kept portion to the results and update the master mask for the next iteration.
-        if not kept_portion.is_empty:
-            kept_geoms.append(kept_portion)
-            current_mask.append(kept_portion.buffer(tolerance))
-        
-        # The removed portion is simply what's left of the original after the difference.
-        if not (removed_portion := geom.difference(kept_portion)).is_empty:
-            removed_geoms.append(removed_portion)
-            
-    # Return flattened lists, as difference operations can create multi-part geometries.
-    return flatten_geometries(kept_geoms), flatten_geometries(removed_geoms), current_mask
-
-def _deoverlap_structured_engine(
-    geometries: Iterable[BaseGeometry],
-    tolerance: float,
-    progress_bar: bool,
-    mask: List[Polygon] = None,
-) -> Tuple[List[BaseGeometry], Dict[int, List[BaseGeometry]], Dict[int, List[BaseGeometry]], List[int], List[Polygon]]:
-    """
-    Internal engine for structure-preserving de-overlapping with origin tracking.
-
-    This function is more powerful, preserving geometry types where possible
-    and tracking the origin of all kept and removed pieces.
-
-    Args:
-        geometries: The input geometries to de-overlap.
-        tolerance: The buffer distance to define the overlap area.
-        progress_bar: Whether to display a tqdm progress bar.
-        mask (optional): An existing list of mask polygons to start with.
-
-    Returns:
-        A tuple containing:
-            - A list of the final kept (non-overlapping) structured geometries.
-            - A dictionary mapping original index to its list of kept geometries.
-            - A dictionary mapping original index to its list of removed parts.
-            - A list of indices of geometries that were wholly removed.
-            - The list of mask polygons used for clipping.
-    """
-    # Initialize the mask, using a copy of the provided mask if it exists.
-    current_mask = [] if mask is None else mask[:]
-    kept_results, kept_parts_map, removed_parts_map, wholly_removed_indices = [], {}, {}, []
-    ROBUSTNESS_BUFFER = 1e-9
-
-    iterable = tqdm(list(geometries), desc="De-overlapping (structured)", disable=not progress_bar)
-    
-    # Enumerate to get the original index 'i' for origin tracking.
-    for i, geom in enumerate(iterable):
-        if geom.is_empty: continue
-
-        # Decompose the current top-level geometry into its constituent primitive
-        # parts (e.g., a MultiLineString becomes a list of LineStrings).
-        parts_to_process = flatten_geometries(geom)
-        if not parts_to_process: continue
-
-        kept_sub_parts = []
-        if not current_mask:
-            # If the mask is empty (i.e., this is the first geometry), keep all parts.
-            kept_sub_parts = parts_to_process
+    def _consolidate(self) -> None:
+        if len(self.polys) <= 1:
+            self._since_union = 0
+            return
+        merged = union_all(self.polys)
+        if merged.is_empty:
+            self.polys, self.angles, self.seg_ids = [], [], []
         else:
-            # Check each constituent part against the cumulative mask.
-            tree = STRtree(current_mask)
-            for part in parts_to_process:
-                if (nearby_indices := tree.query(part)).size > 0:
-                    local_mask = union_all([current_mask[i] for i in nearby_indices])
-                    if not (kept_part := part.difference(local_mask.buffer(ROBUSTNESS_BUFFER))).is_empty:
-                        kept_sub_parts.append(kept_part)
-                else: # Part is not near any existing mask geometry, so it's kept entirely.
-                    kept_sub_parts.append(part)
-        
-        # If no sub-parts survived the clipping, the entire original geometry was removed.
-        if not kept_sub_parts:
-            wholly_removed_indices.append(i)
-            # Store the entire original geometry as the "removed part".
-            removed_parts_map.setdefault(i, []).append(geom)
-            continue
-        
-        # Reassemble the surviving sub-parts into a single, valid geometry.
-        # e.g., two LineStrings become one MultiLineString.
-        reassembled_kept_geom = unary_union(kept_sub_parts)
-        
-        # This is a crucial check to preserve Polygons. If a Polygon was clipped
-        # but its boundary remains a single, intact ring, we restore the original
-        # Polygon object instead of just returning its boundary line.
-        final_kept_geom = reassembled_kept_geom
-        if geom.geom_type == 'Polygon' and reassembled_kept_geom.equals(geom.boundary):
-             final_kept_geom = geom
-        
-        # Store the final kept geometry in both the simple list and the origin-tracked map.
-        kept_results.append(final_kept_geom)
-        kept_parts_map.setdefault(i, []).append(final_kept_geom)
-        
-        # Calculate the removed portion for origin tracking.
-        # For Polygons, we must diff against its boundary, not its area, to get
-        # the removed LineString fragments correctly.
-        source_for_diff = geom.boundary if isinstance(geom, (Polygon, MultiPolygon)) else geom
-        if not (removed_portion := source_for_diff.difference(reassembled_kept_geom)).is_empty:
-             removed_parts_map.setdefault(i, []).append(removed_portion)
-        
-        # Update the master mask with the buffer of the geometry that was *actually kept*.
-        current_mask.append(reassembled_kept_geom.buffer(tolerance))
-        
-    return kept_results, kept_parts_map, removed_parts_map, wholly_removed_indices, current_mask
+            self.polys = [merged]
+            self.angles = [None]
+            self.seg_ids = [None]
+        self._since_union = 0
+        self._since_rebuild = 0
+        self._tree = STRtree(self.polys) if self.polys else None
+
+    def _ensure_tree(self) -> Optional[STRtree]:
+        if not self.polys:
+            return None
+        if self._tree is None or self._since_rebuild >= self.rebuild_every:
+            self._tree = STRtree(self.polys)
+            self._since_rebuild = 0
+        return self._tree
+
+    def local_mask(
+        self,
+        geom: BaseGeometry,
+        angle: Optional[float],
+        angle_tol_rad: float,
+        seg_id: Optional[_SegId] = None,
+    ) -> Optional[BaseGeometry]:
+        tree = self._ensure_tree()
+        if tree is None:
+            return None
+        nearby = tree.query(geom)
+        if getattr(nearby, "size", len(nearby)) == 0:
+            return None
+        selected: list[BaseGeometry] = []
+        for i in (int(j) for j in nearby):
+            other_seg = self.seg_ids[i]
+            if (
+                seg_id is not None
+                and other_seg is not None
+                and _seg_adjacent(seg_id, other_seg, self.segment_adjacency)
+            ):
+                continue
+            if self.parallel_only and angle is not None:
+                other_ang = self.angles[i]
+                if other_ang is not None and _angle_diff(angle, other_ang) > angle_tol_rad:
+                    continue
+            selected.append(self.polys[i])
+        if not selected:
+            return None
+        return union_all(selected)
+
+    def as_list(self) -> List[Polygon]:
+        out: List[Polygon] = []
+        for p in self.polys:
+            if p.is_empty:
+                continue
+            if isinstance(p, Polygon):
+                out.append(p)
+            elif isinstance(p, MultiPolygon):
+                out.extend(list(p.geoms))
+        return out
+
 
 # =============================================================================
-#  Single Public-Facing Function
+#  Core engine
 # =============================================================================
+
+
+def _priority_order(scores: Sequence[float], keep: KeepPolicy) -> List[int]:
+    idxs = list(range(len(scores)))
+    if keep is KeepPolicy.FIRST:
+        return idxs
+    if keep is KeepPolicy.LONGEST:
+        return sorted(idxs, key=lambda i: scores[i], reverse=True)
+    if keep is KeepPolicy.SHORTEST:
+        return sorted(idxs, key=lambda i: scores[i])
+    raise ValueError(f"unknown keep policy: {keep!r}")
+
+
+def _clip_one(
+    part: BaseGeometry,
+    mask: _MaskIndex,
+    *,
+    angle: Optional[float],
+    angle_tol_rad: float,
+    seg_id: Optional[_SegId],
+) -> BaseGeometry:
+    local = mask.local_mask(part, angle, angle_tol_rad, seg_id=seg_id)
+    if local is None:
+        return part
+    clipped = part.difference(local.buffer(_ROBUSTNESS_BUFFER))
+    return clipped if not clipped.is_empty else part.__class__()
+
 
 def deoverlap(
     geometries: GeomInput,
     tolerance: float,
-    preserve_types: bool = False,
+    *,
+    keep: Union[KeepPolicy, str] = KeepPolicy.FIRST,
+    mode: Union[ClipMode, str] = ClipMode.CROP,
+    min_length: float = 0.0,
+    drop_fraction: float = 0.5,
+    parallel_only: bool = False,
+    parallel_angle: float = 30.0,
+    segments: bool = False,
+    segment_adjacency: int = 1,
+    group: bool = True,
     keep_duplicates: bool = False,
-    track_origins: bool = False,
     progress_bar: bool = False,
-    mask: List[Polygon] = None
-) -> Any:
-    """De-overlaps a list of geometries, with extensive options for output format.
-
-    This is the main public-facing function that acts as a dispatcher to the
-    internal engines based on user-selected flags.
+    mask: Optional[Sequence[Polygon]] = None,
+    tree_rebuild_every: int = 32,
+    mask_union_every: int = 64,
+    preserve_types: Optional[bool] = None,
+    track_origins: bool = False,
+) -> DeoverlapResult:
+    """De-overlap geometries that fall within ``tolerance`` of each other.
 
     Args:
-        geometries: An iterable of shapely geometries.
-        tolerance: The buffer distance to consider geometries as overlapping.
-        preserve_types (bool, optional):
-            - `False` (Default): Fast mode. Returns a flat list of simple
-              LineStrings and Points.
-            - `True`: Powerful mode. Returns structured geometries
-              (e.g., MultiLineString). Slower but more informative.
-        keep_duplicates (bool, optional):
-            If `True`, the removed/overlapping portions are also returned.
-            Defaults to False.
-        track_origins (bool, optional):
-            Only applies when `preserve_types=True`. If `True`, returns a
-            detailed dictionary with full origin tracking. Defaults to False.
-        progress_bar (bool, optional):
-            If `True`, displays a tqdm progress bar during processing.
-            Defaults to False.
-        mask (List[Polygon], optional):
-            An optional, pre-existing list of polygon masks. If provided,
-            geometries will be de-overlapped against this mask first. This is
-            useful for iterative processing or for ensuring consistency across
-            multiple, separate calls. The returned mask will include these
-            initial polygons. Defaults to None.
-
-    Returns:
-        The return type is dynamic and depends on the flags:
-        - `preserve_types=False`:
-          A tuple `(kept_geoms, {}, removed_geoms, mask)`.
-        - `preserve_types=True` and `track_origins=False`:
-          A tuple `(kept_geoms, kept_map, removed_geoms, mask)`.
-        - `preserve_types=True` and `track_origins=True`:
-          A dictionary with keys `("kept", "kept_parts", "removed_parts",
-          "wholly_removed_indices", "mask")`.
+        segments: If true, explode every path into edge segments and allow
+            self-overlap — opposite sides of a thin outline can suppress each
+            other. Adjacent segments on the same chain (within
+            ``segment_adjacency``) are never clipped against each other.
+        segment_adjacency: How many neighbouring segment indices on the same
+            chain are exempt from clipping (default 1 = immediate neighbours,
+            including wrap-around on closed rings).
     """
-    # --- Mode 1: Fast, Flat Output ---
-    if not preserve_types:
-        kept, removed, final_mask = _deoverlap_flat_engine(
-            geometries, tolerance, progress_bar, mask=mask
-        )
-        return kept, {}, (removed if keep_duplicates else []), final_mask
-    
-    # --- Mode 2: Structure-Preserving Output ---
-    kept, kept_map, removed_map, wholly_removed, final_mask = _deoverlap_structured_engine(
-        geometries, tolerance, progress_bar, mask=mask
+    if preserve_types is not None:
+        group = bool(preserve_types)
+
+    keep_policy = KeepPolicy(keep) if not isinstance(keep, KeepPolicy) else keep
+    clip_mode = ClipMode(mode) if not isinstance(mode, ClipMode) else mode
+    angle_tol_rad = math.radians(parallel_angle)
+
+    geoms = _as_list(geometries)
+    index = _MaskIndex(
+        mask,
+        rebuild_every=tree_rebuild_every,
+        union_every=mask_union_every,
+        parallel_only=parallel_only,
+        segment_adjacency=segment_adjacency if segments else -1,
     )
-    
-    # Sub-mode: Return the detailed dictionary with full origin tracking.
-    if track_origins:
-        return {
-            "kept": kept,
-            "kept_parts": kept_map,
-            "removed_parts": (removed_map if keep_duplicates else {}),
-            "wholly_removed_indices": wholly_removed,
-            "mask": final_mask
-        }
-    else:
-        # Sub-mode: Return a simplified tuple for compatibility.
-        removed_list = []
+
+    result = DeoverlapResult()
+    _ = track_origins
+
+    if segments:
+        return _deoverlap_segments(
+            geoms,
+            tolerance,
+            keep_policy=keep_policy,
+            clip_mode=clip_mode,
+            min_length=min_length,
+            drop_fraction=drop_fraction,
+            parallel_only=parallel_only,
+            angle_tol_rad=angle_tol_rad,
+            segment_adjacency=segment_adjacency,
+            group=group,
+            keep_duplicates=keep_duplicates,
+            progress_bar=progress_bar,
+            index=index,
+        )
+
+    order = _priority_order([_length(g) for g in geoms], keep_policy)
+    iterable: Iterable[int] = order
+    if progress_bar and tqdm is not None:
+        iterable = tqdm(order, desc="De-overlapping", total=len(order))
+
+    for i in iterable:
+        geom = geoms[i]
+        if geom is None or geom.is_empty:
+            continue
+
+        parts = flatten_geometries(geom)
+        if not parts:
+            continue
+
+        angle = _line_angle(geom) if parallel_only else None
+        kept_sub = [
+            k
+            for part in parts
+            if not (
+                k := _clip_one(
+                    part, index, angle=angle, angle_tol_rad=angle_tol_rad, seg_id=None
+                )
+            ).is_empty
+        ]
+
+        if not kept_sub:
+            result.wholly_removed.append(i)
+            if keep_duplicates:
+                result.removed_parts[i] = geom
+                result.removed.append(geom)
+            continue
+
+        reassembled = _filter_min_length(_reassemble(kept_sub, geom), min_length)
+        if reassembled.is_empty:
+            result.wholly_removed.append(i)
+            if keep_duplicates:
+                result.removed_parts[i] = geom
+                result.removed.append(geom)
+            continue
+
+        if clip_mode is ClipMode.DROP and _length(geom) > 0:
+            if _length(reassembled) / _length(geom) < (1.0 - drop_fraction):
+                result.wholly_removed.append(i)
+                if keep_duplicates:
+                    result.removed_parts[i] = geom
+                    result.removed.append(geom)
+                continue
+
+        removed_portion = _split_removed(geom, reassembled)
+        if keep_duplicates and not removed_portion.is_empty:
+            result.removed_parts[i] = removed_portion
+            result.removed.extend(flatten_geometries(removed_portion))
+
+        result.kept_parts[i] = reassembled
+        if group:
+            result.kept.append(reassembled)
+        else:
+            result.kept.extend(flatten_geometries(reassembled))
+
+        index.add(reassembled, tolerance, angle)
+
+    result.mask = index.as_list()
+    return result
+
+
+def _deoverlap_segments(
+    geoms: Sequence[BaseGeometry],
+    tolerance: float,
+    *,
+    keep_policy: KeepPolicy,
+    clip_mode: ClipMode,
+    min_length: float,
+    drop_fraction: float,
+    parallel_only: bool,
+    angle_tol_rad: float,
+    segment_adjacency: int,
+    group: bool,
+    keep_duplicates: bool,
+    progress_bar: bool,
+    index: _MaskIndex,
+) -> DeoverlapResult:
+    """Self-overlap path: work on exploded edges, then regroup by origin."""
+    segments, origins, seg_ids, parent_lengths = _explode_segments(geoms)
+    result = DeoverlapResult()
+    if not segments:
+        result.mask = index.as_list()
+        return result
+
+    index.segment_adjacency = max(0, segment_adjacency)
+    order = _priority_order(parent_lengths, keep_policy)
+
+    kept_by_origin: dict[int, list[BaseGeometry]] = {i: [] for i in range(len(geoms))}
+    saw_origin = set(origins)
+
+    iterable: Iterable[int] = order
+    if progress_bar and tqdm is not None:
+        iterable = tqdm(order, desc="De-overlapping segments", total=len(order))
+
+    for si in iterable:
+        seg = segments[si]
+        origin = origins[si]
+        sid = seg_ids[si]
+        angle = _line_angle(seg) if parallel_only else None
+
+        kept = _clip_one(
+            seg, index, angle=angle, angle_tol_rad=angle_tol_rad, seg_id=sid
+        )
+        if kept.is_empty:
+            if keep_duplicates:
+                result.removed.append(seg)
+            continue
+
+        if clip_mode is ClipMode.DROP and _length(seg) > 0:
+            if _length(kept) / _length(seg) < (1.0 - drop_fraction):
+                if keep_duplicates:
+                    result.removed.append(seg)
+                continue
+
+        kept = _filter_min_length(kept, min_length)
+        if kept.is_empty:
+            if keep_duplicates:
+                result.removed.append(seg)
+            continue
+
+        if keep_duplicates and _length(kept) + 1e-12 < _length(seg):
+            removed = seg.difference(kept)
+            if not removed.is_empty:
+                result.removed.extend(flatten_geometries(removed))
+
+        kept_by_origin[origin].append(kept)
+        index.add(kept, tolerance, angle, seg_id=sid)
+
+    for origin, pieces in kept_by_origin.items():
+        if origin not in saw_origin:
+            continue
+        if not pieces:
+            result.wholly_removed.append(origin)
+            if keep_duplicates:
+                result.removed_parts[origin] = geoms[origin]
+            continue
+        reassembled = _filter_min_length(_reassemble(pieces, geoms[origin]), min_length)
+        if reassembled.is_empty:
+            result.wholly_removed.append(origin)
+            if keep_duplicates:
+                result.removed_parts[origin] = geoms[origin]
+            continue
+        result.kept_parts[origin] = reassembled
+        if group:
+            result.kept.append(reassembled)
+        else:
+            result.kept.extend(flatten_geometries(reassembled))
+
         if keep_duplicates:
-            for parts in removed_map.values():
-                removed_list.extend(parts)
-        return kept, kept_map, removed_list, final_mask
+            removed = _split_removed(geoms[origin], reassembled)
+            if not removed.is_empty:
+                result.removed_parts[origin] = removed
+
+    result.mask = index.as_list()
+    return result
