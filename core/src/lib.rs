@@ -1,21 +1,23 @@
 //! Remove overlapping strokes from vector drawings.
 //!
-//! Built on the `geo` crate. Geometries are processed in priority order; each
-//! kept stroke adds a corridor of radius `tolerance` to a mask, and every
-//! later stroke loses whatever falls inside a corridor running within
-//! `angle` degrees of it.
+//! Geometries are processed in priority order; each kept stroke adds a
+//! corridor of radius `tolerance` to a mask, and every later stroke loses
+//! whatever falls inside a corridor running within `angle` degrees of it.
+//!
+//! Corridors are never built as polygons: the corridor of one straight edge
+//! is a capsule, and the part of another edge inside it is computed exactly
+//! (see `geom`).
 //!
 //! Polygons are not a separate input type: pass their rings as closed
 //! lines, grouped in one [`Geometry`].
 
+mod geom;
 mod mask;
 mod merge;
 
 use std::f64::consts::PI;
 
-use geo::bool_ops::FillRule;
-use geo::{BooleanOps, BoundingRect, Buffer, Coord, Intersects, LineString, MultiLineString, Point, Polygon, Rect};
-
+use geom::{dist, lerp};
 use mask::MaskIndex;
 use merge::line_merge;
 
@@ -42,15 +44,41 @@ pub enum Prefer {
     Shortest,
 }
 
+/// An `[x, y]` coordinate.
+pub type Coord = [f64; 2];
+
 /// One part of a geometry: a polyline (closed if first == last) or a point.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Part {
-    Line(LineString<f64>),
-    Point(Point<f64>),
+    Line(Vec<Coord>),
+    Point(Coord),
 }
 
 /// A geometry is a group of parts that are kept or removed together.
 pub type Geometry = Vec<Part>;
+
+/// Everything within `radius` of the segment `ab`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Capsule {
+    pub a: Coord,
+    pub b: Coord,
+    pub radius: f64,
+}
+
+/// A polygon with holes; rings are closed (first == last).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Polygon {
+    pub exterior: Vec<Coord>,
+    pub interiors: Vec<Vec<Coord>>,
+}
+
+/// Areas that clip every stroke: the corridors of a previous run, or any
+/// polygon to keep clear.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Mask {
+    pub capsules: Vec<Capsule>,
+    pub polygons: Vec<Polygon>,
+}
 
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -70,7 +98,7 @@ pub struct Options {
     /// Collect the removed pieces in the result.
     pub keep_duplicates: bool,
     /// Corridors from a previous run that also clip this one.
-    pub mask: Vec<Polygon<f64>>,
+    pub mask: Mask,
 }
 
 impl Default for Options {
@@ -83,7 +111,7 @@ impl Default for Options {
             min_length: 0.0,
             drop: None,
             keep_duplicates: false,
-            mask: Vec::new(),
+            mask: Mask::default(),
         }
     }
 }
@@ -118,7 +146,7 @@ pub struct DeoverlapResult {
     /// Inputs removed entirely.
     pub wholly_removed: Vec<usize>,
     /// Corridors of everything kept, to pass as `mask` to a later run.
-    pub mask: Vec<Polygon<f64>>,
+    pub mask: Mask,
 }
 
 impl DeoverlapResult {
@@ -148,8 +176,7 @@ pub fn deoverlap_with_progress(
         return deoverlap_self(geoms, opts, angle_tol_rad, progress);
     }
 
-    let by_bearing = opts.by_bearing();
-    let mut index = MaskIndex::new(&opts.mask, by_bearing, -1);
+    let mut index = MaskIndex::new(&opts.mask, opts.by_bearing(), -1);
     let mut result = DeoverlapResult::with_len(geoms.len());
     let snap = opts.tolerance * SNAP_FRACTION;
     let want_removed = opts.keep_duplicates;
@@ -165,11 +192,7 @@ pub fn deoverlap_with_progress(
         let mut kept_sub = Vec::new();
         let mut removed = Vec::new();
         for part in geom {
-            let c = if by_bearing {
-                clip_local(part, &index, angle_tol_rad, snap, want_removed)
-            } else {
-                clip_one(part, &index, None, angle_tol_rad, None, want_removed)
-            };
+            let c = clip_part(part, &index, angle_tol_rad, None, snap, want_removed);
             kept_sub.extend(c.kept);
             removed.extend(c.removed);
         }
@@ -193,23 +216,14 @@ pub fn deoverlap_with_progress(
         }
 
         for part in &reassembled {
-            match part {
-                Part::Line(ls) if by_bearing => {
-                    for (a, b) in edges(ls) {
-                        let edge = LineString::new(vec![a, b]);
-                        index.add(edge.buffer(opts.tolerance), Some(edge_angle(a, b)), None);
-                    }
-                }
-                Part::Line(ls) => index.add(ls.buffer(opts.tolerance), None, None),
-                Part::Point(p) => index.add(p.buffer(opts.tolerance), None, None),
-            }
+            add_corridors(&mut index, part, opts.tolerance, None);
         }
         result.kept_parts[i] = Some(reassembled);
         result.kept_order.push(i);
     }
     progress(geoms.len(), geoms.len());
 
-    result.mask = index.into_polygons();
+    result.mask = index.into_mask();
     result
 }
 
@@ -230,15 +244,14 @@ fn deoverlap_self(
     angle_tol_rad: f64,
     progress: &mut dyn FnMut(usize, usize),
 ) -> DeoverlapResult {
-    let by_bearing = opts.by_bearing();
-    let mut index = MaskIndex::new(&opts.mask, by_bearing, SEGMENT_ADJACENCY);
+    let mut index = MaskIndex::new(&opts.mask, opts.by_bearing(), SEGMENT_ADJACENCY);
     let mut result = DeoverlapResult::with_len(geoms.len());
     let snap = opts.tolerance * SNAP_FRACTION;
     let want_removed = opts.keep_duplicates;
 
     let segs = explode_segments(geoms);
     if segs.is_empty() {
-        result.mask = index.into_polygons();
+        result.mask = index.into_mask();
         return result;
     }
 
@@ -253,10 +266,9 @@ fn deoverlap_self(
     for (done, si) in priority_order(&parent_lengths, opts.prefer).into_iter().enumerate() {
         progress(done, segs.len());
         let s = &segs[si];
-        let whole = Part::Line(LineString::new(vec![s.a, s.b]));
-        let angle = by_bearing.then(|| edge_angle(s.a, s.b));
+        let whole = Part::Line(vec![s.a, s.b]);
 
-        let c = clip_one(&whole, &index, angle, angle_tol_rad, Some(&s.id), want_removed);
+        let c = clip_part(&whole, &index, angle_tol_rad, Some(&s.id), snap, want_removed);
         let dropped = c.kept.is_empty() || opts.drops(parts_length(&c.kept), dist(s.a, s.b));
         let (kept, stubs) = if dropped { (Vec::new(), Vec::new()) } else { filter_min_length(c.kept, opts.min_length) };
         if kept.is_empty() {
@@ -275,9 +287,7 @@ fn deoverlap_self(
         }
 
         for part in &kept {
-            if let Part::Line(ls) = part {
-                index.add(ls.buffer(opts.tolerance), angle, Some(s.id));
-            }
+            add_corridors(&mut index, part, opts.tolerance, Some(s.id));
         }
         kept_by_origin[s.origin].extend(kept);
     }
@@ -306,8 +316,24 @@ fn deoverlap_self(
         result.kept_order.push(origin);
     }
 
-    result.mask = index.into_polygons();
+    result.mask = index.into_mask();
     result
+}
+
+/// One capsule per edge of a kept part (a disc for a point).
+fn add_corridors(index: &mut MaskIndex, part: &Part, radius: f64, seg_id: Option<SegId>) {
+    match part {
+        Part::Line(l) => {
+            let coords = dedupe(l);
+            if coords.len() == 1 {
+                index.add(Capsule { a: coords[0], b: coords[0], radius }, None, seg_id);
+            }
+            for w in coords.windows(2) {
+                index.add(Capsule { a: w[0], b: w[1], radius }, Some(edge_angle(w[0], w[1])), seg_id);
+            }
+        }
+        Part::Point(p) => index.add(Capsule { a: *p, b: *p, radius }, None, None),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -348,8 +374,8 @@ impl SegId {
 }
 
 struct Segment {
-    a: Coord<f64>,
-    b: Coord<f64>,
+    a: Coord,
+    b: Coord,
     origin: usize,
     id: SegId,
     parent_length: f64,
@@ -362,7 +388,7 @@ fn explode_segments(geoms: &[Geometry]) -> Vec<Segment> {
         let parent_length = geom_length(geom);
         for part in geom {
             let Part::Line(ls) = part else { continue };
-            let mut coords = dedupe(&ls.0);
+            let mut coords = dedupe(ls);
             if coords.len() < 2 {
                 continue;
             }
@@ -376,7 +402,7 @@ fn explode_segments(geoms: &[Geometry]) -> Vec<Segment> {
                 if a == b {
                     continue;
                 }
-                let heading = (b.y - a.y).atan2(b.x - a.x);
+                let heading = (b[1] - a[1]).atan2(b[0] - a[0]);
                 let id = SegId { chain, index: i, count, closed, heading };
                 out.push(Segment { a, b, origin, id, parent_length });
             }
@@ -399,87 +425,139 @@ impl Clipped {
     fn untouched(part: &Part) -> Self {
         Self { kept: vec![part.clone()], removed: Vec::new() }
     }
+
+    fn gone(part: &Part) -> Self {
+        Self { kept: Vec::new(), removed: vec![part.clone()] }
+    }
 }
 
-fn clip_one(
+/// Clip a part edge by edge, each edge against the corridors within the
+/// angle window of *that* edge.
+///
+/// One bearing per path (first to last vertex) would misjudge curves: a ramp
+/// that runs alongside a road for a while can have a chord pointing elsewhere.
+fn clip_part(
     part: &Part,
     mask: &MaskIndex,
-    angle: Option<f64>,
     angle_tol_rad: f64,
     seg_id: Option<&SegId>,
+    snap: f64,
     want_removed: bool,
 ) -> Clipped {
-    let Some(rect) = part_rect(part) else {
-        return Clipped::untouched(part);
-    };
-    let Some(local) = mask.local_mask(rect, angle, angle_tol_rad, seg_id) else {
-        return Clipped::untouched(part);
-    };
-    match part {
+    let coords = match part {
         Part::Point(p) => {
-            if local.intersects(p) {
-                Clipped { kept: Vec::new(), removed: vec![part.clone()] }
-            } else {
-                Clipped::untouched(part)
-            }
+            return if mask.covers_point(*p) { Clipped::gone(part) } else { Clipped::untouched(part) };
         }
-        Part::Line(ls) => {
-            if !local.intersects(ls) {
-                return Clipped::untouched(part);
-            }
-            let subject = MultiLineString(vec![ls.clone()]);
-            let pieces = |invert| -> Vec<Part> {
-                local
-                    .clip_with_fill_rule(&subject, invert, FillRule::NonZero)
-                    .0
-                    .into_iter()
-                    .filter(|l| line_length(l) > 0.0)
-                    .map(Part::Line)
-                    .collect()
-            };
-            let kept = pieces(true);
-            let removed = if want_removed { pieces(false) } else { Vec::new() };
-            Clipped { kept, removed }
-        }
-    }
-}
-
-/// Clip edge by edge, each against corridors parallel to *that* edge.
-///
-/// One bearing per path (first to last vertex) misjudges curves: a ramp that
-/// runs alongside a road for a while can have a chord pointing elsewhere.
-fn clip_local(part: &Part, mask: &MaskIndex, angle_tol_rad: f64, snap: f64, want_removed: bool) -> Clipped {
-    let near = part_rect(part).is_some_and(|r| mask.near(r));
-    let Part::Line(ls) = part else {
-        return clip_one(part, mask, None, angle_tol_rad, None, want_removed);
+        Part::Line(l) => dedupe(l),
     };
-    if !near {
-        return clip_one(part, mask, None, angle_tol_rad, None, want_removed);
+    if coords.len() < 2 {
+        return match coords.first() {
+            Some(&p) if mask.covers_point(p) => Clipped::gone(part),
+            _ => Clipped::untouched(part),
+        };
     }
-    let mut kept = Vec::new();
-    let mut removed = Vec::new();
+
+    let mut kept = Runs::default();
+    let mut removed = Runs::default();
     let mut changed = false;
-    for (a, b) in edges(ls) {
-        let edge = Part::Line(LineString::new(vec![a, b]));
-        let c = clip_one(&edge, mask, Some(edge_angle(a, b)), angle_tol_rad, None, want_removed);
-        if parts_length(&c.kept) < dist(a, b) - snap {
-            changed = true;
+    for w in coords.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let slack = snap / dist(a, b);
+        let covered: Vec<(f64, f64)> = mask
+            .covered(a, b, Some(edge_angle(a, b)), angle_tol_rad, seg_id)
+            .into_iter()
+            .filter(|(s0, s1)| s1 - s0 > slack)
+            .map(|(s0, s1)| (if s0 < slack { 0.0 } else { s0 }, if s1 > 1.0 - slack { 1.0 } else { s1 }))
+            .collect();
+        if covered.is_empty() {
+            kept.extend(a, b, &[(0.0, 1.0)]);
+            removed.extend(a, b, &[]);
+            continue;
         }
-        kept.extend(c.kept);
-        removed.extend(c.removed);
+        changed = true;
+        kept.extend(a, b, &gaps(&covered, slack));
+        if want_removed {
+            removed.extend(a, b, &covered);
+        }
     }
     if !changed {
         return Clipped::untouched(part);
     }
-    Clipped { kept: reassemble(kept, snap), removed: reassemble(removed, snap) }
+    let (start, end) = (coords[0], *coords.last().unwrap());
+    Clipped { kept: kept.finish(start, end), removed: removed.finish(start, end) }
+}
+
+/// The parts of `[0, 1]` not covered by sorted, disjoint `covered`, ignoring
+/// slivers of `slack` or less.
+fn gaps(covered: &[(f64, f64)], slack: f64) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    let mut t = 0.0;
+    for &(s0, s1) in covered {
+        if s0 - t > slack {
+            out.push((t, s0));
+        }
+        t = s1;
+    }
+    if 1.0 - t > slack {
+        out.push((t, 1.0));
+    }
+    out
+}
+
+/// Polylines built from per-edge intervals: a run continues across a vertex
+/// when one edge's interval ends at 1 and the next edge's starts at 0.
+#[derive(Default)]
+struct Runs {
+    done: Vec<Vec<Coord>>,
+    open: Option<Vec<Coord>>,
+}
+
+impl Runs {
+    fn extend(&mut self, a: Coord, b: Coord, intervals: &[(f64, f64)]) {
+        for &(s0, s1) in intervals {
+            let p1 = if s1 >= 1.0 { b } else { lerp(a, b, s1) };
+            match self.open.as_mut() {
+                Some(run) if s0 <= 0.0 => run.push(p1),
+                _ => {
+                    self.close();
+                    let p0 = if s0 <= 0.0 { a } else { lerp(a, b, s0) };
+                    self.open = Some(vec![p0, p1]);
+                }
+            }
+            if s1 < 1.0 {
+                self.close();
+            }
+        }
+        if intervals.last().is_none_or(|iv| iv.1 < 1.0) {
+            self.close();
+        }
+    }
+
+    fn close(&mut self) {
+        if let Some(run) = self.open.take() {
+            self.done.push(run);
+        }
+    }
+
+    /// Finished runs; on a closed ring, the runs through its start vertex
+    /// are joined into one.
+    fn finish(mut self, start: Coord, end: Coord) -> Vec<Part> {
+        self.close();
+        let mut runs = self.done;
+        if start == end && runs.len() > 1 && runs[0][0] == start && *runs.last().unwrap().last().unwrap() == end {
+            let first = runs.remove(0);
+            runs.last_mut().unwrap().extend(first.into_iter().skip(1));
+        }
+        runs.into_iter().map(Part::Line).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
 //  Reassembly and helpers
 // ---------------------------------------------------------------------------
 
-/// Rejoin pieces that meet end to end: the arc through a ring's start vertex,
-/// or consecutive edges in self-overlap mode.
+/// Rejoin pieces that meet end to end: consecutive edges in self-overlap
+/// mode, or parts of one geometry that touch.
 fn reassemble(parts: Vec<Part>, snap: f64) -> Vec<Part> {
     let mut lines = Vec::new();
     let mut points = Vec::new();
@@ -516,8 +594,8 @@ fn priority_order(scores: &[f64], prefer: Prefer) -> Vec<usize> {
     idxs
 }
 
-fn dedupe(coords: &[Coord<f64>]) -> Vec<Coord<f64>> {
-    let mut out: Vec<Coord<f64>> = Vec::with_capacity(coords.len());
+fn dedupe(coords: &[Coord]) -> Vec<Coord> {
+    let mut out: Vec<Coord> = Vec::with_capacity(coords.len());
     for &c in coords {
         if out.last() != Some(&c) {
             out.push(c);
@@ -526,15 +604,9 @@ fn dedupe(coords: &[Coord<f64>]) -> Vec<Coord<f64>> {
     out
 }
 
-/// 2-point edges of a polyline, in order, skipping repeated vertices.
-fn edges(ls: &LineString<f64>) -> impl Iterator<Item = (Coord<f64>, Coord<f64>)> {
-    let coords = dedupe(&ls.0);
-    (1..coords.len()).map(move |i| (coords[i - 1], coords[i]))
-}
-
 /// Undirected bearing of an edge, in [0, π).
-fn edge_angle(a: Coord<f64>, b: Coord<f64>) -> f64 {
-    (b.y - a.y).atan2(b.x - a.x).rem_euclid(PI)
+fn edge_angle(a: Coord, b: Coord) -> f64 {
+    (b[1] - a[1]).atan2(b[0] - a[0]).rem_euclid(PI)
 }
 
 pub(crate) fn angle_diff(a: f64, b: f64) -> f64 {
@@ -542,12 +614,8 @@ pub(crate) fn angle_diff(a: f64, b: f64) -> f64 {
     d.min(PI - d)
 }
 
-fn dist(a: Coord<f64>, b: Coord<f64>) -> f64 {
-    (b.x - a.x).hypot(b.y - a.y)
-}
-
-fn line_length(ls: &LineString<f64>) -> f64 {
-    ls.0.windows(2).map(|w| dist(w[0], w[1])).sum()
+fn line_length(ls: &[Coord]) -> f64 {
+    ls.windows(2).map(|w| dist(w[0], w[1])).sum()
 }
 
 fn part_length(p: &Part) -> f64 {
@@ -564,11 +632,4 @@ fn parts_length(parts: &[Part]) -> f64 {
 /// Total length of a geometry's lines (a polygon's perimeter).
 pub fn geom_length(geom: &[Part]) -> f64 {
     parts_length(geom)
-}
-
-fn part_rect(p: &Part) -> Option<Rect<f64>> {
-    match p {
-        Part::Line(l) => l.bounding_rect(),
-        Part::Point(pt) => Some(Rect::new(pt.0, pt.0)),
-    }
 }

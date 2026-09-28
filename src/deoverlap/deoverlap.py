@@ -1,8 +1,8 @@
 """De-overlap Shapely geometries that sit within a tolerance of each other.
 
 The engine walks geometries in priority order. Each kept piece contributes a
-buffered *mask*; later pieces are cropped (or dropped) where they fall inside
-that mask. That is the right model for pen plotters: strokes closer than a pen
+corridor of radius ``tolerance`` to a *mask*; later pieces are cropped (or
+dropped) where they fall inside that mask. That is the right model for pen plotters: strokes closer than a pen
 width visually merge, so only one of them should keep the ink.
 
 ``self_overlap=True`` splits every path into edges first, so the two sides of a
@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, List, Literal, Optional, Sequence, Union
 
+import shapely
 from shapely import get_coordinates
 from shapely.geometry import (
     GeometryCollection,
@@ -55,7 +56,19 @@ class DeoverlapResult:
     kept_parts: dict[int, BaseGeometry] = field(default_factory=dict)
     removed_parts: dict[int, BaseGeometry] = field(default_factory=dict)
     wholly_removed: List[int] = field(default_factory=list)
-    mask: List[Polygon] = field(default_factory=list)
+    _carried: List[Polygon] = field(default_factory=list, repr=False)
+    _tolerance: float = field(default=0.0, repr=False)
+    _mask: Optional[List[Polygon]] = field(default=None, repr=False)
+
+    @property
+    def mask(self) -> List[Polygon]:
+        """Corridor polygons of everything kept, plus the mask passed in.
+
+        Built on first access; pass it as ``mask`` to a later run.
+        """
+        if self._mask is None:
+            self._mask = self._carried + _corridors(self.kept, self._tolerance)
+        return self._mask
 
 
 # =============================================================================
@@ -114,6 +127,16 @@ def _to_coords(geom: Optional[BaseGeometry]) -> list[list[list[float]]]:
 
 def _from_coords(parts: Sequence[Sequence[Sequence[float]]]) -> List[FlatGeom]:
     return [Point(p[0]) if len(p) == 1 else LineString(p) for p in parts]
+
+
+def _corridors(geoms: List[BaseGeometry], tolerance: float) -> List[Polygon]:
+    if not geoms:
+        return []
+    strokes = [GeometryCollection(flatten_geometries(g)) for g in geoms]
+    out: List[Polygon] = []
+    for poly in shapely.buffer(strokes, tolerance):
+        out.extend(poly.geoms if isinstance(poly, MultiPolygon) else [poly])
+    return [p for p in out if not p.is_empty]
 
 
 def _grouped(
@@ -189,7 +212,7 @@ def deoverlap(
         bar.update(done - bar.n)
 
     try:
-        kept, removed_parts, removed, wholly, mask_out = _core.deoverlap(
+        kept, removed_parts, removed, wholly = _core.deoverlap(
             [_to_coords(g) for g in geoms],
             tolerance,
             prefer=prefer,
@@ -210,7 +233,7 @@ def deoverlap(
             bar.close()
 
     snap = tolerance * _SNAP_FRACTION
-    result = DeoverlapResult(wholly_removed=list(wholly))
+    result = DeoverlapResult(wholly_removed=list(wholly), _carried=mask_polys, _tolerance=tolerance)
     for i, parts in kept:
         grouped = _grouped(_from_coords(parts), geoms[i], snap)
         result.kept_parts[i] = grouped
@@ -221,5 +244,4 @@ def deoverlap(
         if parts is not None:
             result.removed_parts[i] = geoms[i] if i in gone else _grouped(_from_coords(parts))
     result.removed = _from_coords(removed)
-    result.mask = [Polygon(ext, ints) for ext, ints in mask_out]
     return result

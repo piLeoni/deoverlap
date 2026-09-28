@@ -13,5 +13,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 deoverlap-core = { path = "../../core" }
-geo = "0.33"
 pyo3 = { version = "0.29", features = ["abi3-py310"] }

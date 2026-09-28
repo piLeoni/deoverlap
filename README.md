@@ -157,10 +157,11 @@ Stage 2 is clipped against everything stage 1 kept.
 
 ## Performance
 
-The engine is written in Rust (on the [`geo`](https://crates.io/crates/geo)
-crate) and ships as a compiled extension, so `pip install` needs no Rust
-toolchain on the supported platforms. On the MacArthur Maze map below
-(1473 paths) a run takes well under a second.
+The engine is written in Rust and ships as a compiled extension, so
+`pip install` needs no Rust toolchain on the supported platforms. It builds no
+polygons: the corridor of a straight edge is a capsule, and the part of
+another edge inside it is computed exactly. On the MacArthur Maze map below
+(1473 paths) a run takes about 30 ms.
 
 ## vpype plugin
 

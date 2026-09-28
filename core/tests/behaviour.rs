@@ -1,7 +1,6 @@
 //! Same behaviour tests as the Python package (`tests/test_deoverlap.py`).
 
-use deoverlap_core::{deoverlap, geom_length, Geometry, Options, Part, Prefer};
-use geo::{BooleanOps, Buffer, LineString, MultiLineString, Point};
+use deoverlap_core::{deoverlap, geom_length, Coord, Geometry, Mask, Options, Part, Polygon, Prefer};
 
 /// Earlier strokes win and bearings are ignored, so each test controls
 /// exactly the option it is about.
@@ -10,10 +9,10 @@ fn opts(tolerance: f64) -> Options {
 }
 
 fn line(pts: &[(f64, f64)]) -> Geometry {
-    vec![Part::Line(LineString::from(pts.to_vec()))]
+    vec![Part::Line(pts.iter().map(|&(x, y)| [x, y]).collect())]
 }
 
-fn lines(g: &Geometry) -> Vec<&LineString<f64>> {
+fn lines(g: &Geometry) -> Vec<&Vec<Coord>> {
     g.iter()
         .filter_map(|p| match p {
             Part::Line(l) => Some(l),
@@ -28,6 +27,12 @@ fn kept_len(r: &deoverlap_core::DeoverlapResult, i: usize) -> f64 {
 
 fn approx(a: f64, b: f64, abs: f64) -> bool {
     (a - b).abs() <= abs
+}
+
+fn distance_to_segment(p: Coord, a: Coord, b: Coord) -> f64 {
+    let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+    let t = (((p[0] - a[0]) * ex + (p[1] - a[1]) * ey) / (ex * ex + ey * ey)).clamp(0.0, 1.0);
+    (p[0] - a[0] - t * ex).hypot(p[1] - a[1] - t * ey)
 }
 
 #[test]
@@ -111,10 +116,13 @@ fn self_overlap_removes_fold_back_between_neighbours() {
             ..opts(0.1)
         },
     );
-    let kept = MultiLineString(lines(r.kept_parts[0].as_ref().unwrap()).into_iter().cloned().collect());
-    let back = LineString::from(vec![(6.5, 0.4), (6., 0.08)]).buffer(0.01);
-    let overlap = back.clip(&kept, false);
-    let overlap_len: f64 = overlap.0.iter().map(|l| geom_length(&[Part::Line(l.clone())])).sum();
+    let near_back = |c: &Coord| distance_to_segment(*c, [6.5, 0.4], [6., 0.08]) < 0.01;
+    let overlap_len: f64 = lines(r.kept_parts[0].as_ref().unwrap())
+        .iter()
+        .flat_map(|l| l.windows(2))
+        .filter(|w| near_back(&w[0]) && near_back(&w[1]))
+        .map(|w| (w[1][0] - w[0][0]).hypot(w[1][1] - w[0][1]))
+        .sum();
     assert!(overlap_len < 0.1, "fold-back left {overlap_len}");
 }
 
@@ -248,9 +256,33 @@ fn untouched_ring_is_returned_unchanged() {
 #[test]
 fn points_are_clipped_by_corridors() {
     let base = line(&[(0., 0.), (2., 0.)]);
-    let near = vec![Part::Point(Point::new(1.0, 0.05))];
-    let far = vec![Part::Point(Point::new(1.0, 1.0))];
+    let near = vec![Part::Point([1.0, 0.05])];
+    let far = vec![Part::Point([1.0, 1.0])];
     let r = deoverlap(&[base, near, far], &opts(0.1));
     assert_eq!(r.wholly_removed, vec![1]);
     assert!(r.kept_parts[2].is_some());
+}
+
+#[test]
+fn crossing_cut_is_exactly_two_tolerances() {
+    let geoms = [line(&[(0., 0.), (4., 0.)]), line(&[(2., -2.), (2., 2.)])];
+    let r = deoverlap(&geoms, &opts(0.3));
+    assert!(approx(kept_len(&r, 1), 4.0 - 0.6, 1e-9));
+}
+
+#[test]
+fn corridor_ends_are_round() {
+    let geoms = [line(&[(0., 0.), (1., 0.)]), line(&[(1.2, -1.), (1.2, 1.)])];
+    let r = deoverlap(&geoms, &opts(0.3));
+    let chord = 2.0 * (0.3f64.powi(2) - 0.2f64.powi(2)).sqrt();
+    assert!(approx(kept_len(&r, 1), 2.0 - chord, 1e-9));
+}
+
+#[test]
+fn polygon_mask_clips_outside_holes() {
+    let square = |a: f64, b: f64| vec![[a, a], [b, a], [b, b], [a, b], [a, a]];
+    let mask = Mask { capsules: Vec::new(), polygons: vec![Polygon { exterior: square(0., 3.), interiors: vec![square(1., 2.)] }] };
+    let r = deoverlap(&[line(&[(-1., 1.5), (4., 1.5)])], &Options { mask, ..opts(0.1) });
+    assert!(approx(kept_len(&r, 0), 3.0, 1e-9));
+    assert_eq!(lines(r.kept_parts[0].as_ref().unwrap()).len(), 3);
 }

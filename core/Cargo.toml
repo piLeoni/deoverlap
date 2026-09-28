@@ -7,5 +7,4 @@ license = "MIT"
 repository = "https://github.com/piLeoni/deoverlap"
 
 [dependencies]
-geo = "0.33"
 rstar = "0.12"

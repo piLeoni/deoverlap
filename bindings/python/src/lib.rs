@@ -4,8 +4,7 @@
 //! of parts, a part is a list of `[x, y]`, and a single-coordinate part is a
 //! point. The Shapely conversion lives on the Python side.
 
-use deoverlap_core::{Options, Part, Prefer};
-use geo::{LineString, Point, Polygon};
+use deoverlap_core::{Mask, Options, Part, Polygon, Prefer};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -13,30 +12,20 @@ type Coords = Vec<[f64; 2]>;
 type PyGeometry = Vec<Coords>;
 type PyPolygon = (Coords, Vec<Coords>);
 
-type Output = (
-    Vec<(usize, PyGeometry)>,
-    Vec<Option<PyGeometry>>,
-    Vec<Coords>,
-    Vec<usize>,
-    Vec<PyPolygon>,
-);
-
-fn to_ring(coords: &Coords) -> LineString<f64> {
-    LineString::from(coords.iter().map(|c| (c[0], c[1])).collect::<Vec<_>>())
-}
+type Output = (Vec<(usize, PyGeometry)>, Vec<Option<PyGeometry>>, Vec<Coords>, Vec<usize>);
 
 fn to_part(coords: &Coords) -> Option<Part> {
     match coords.len() {
         0 => None,
-        1 => Some(Part::Point(Point::new(coords[0][0], coords[0][1]))),
-        _ => Some(Part::Line(to_ring(coords))),
+        1 => Some(Part::Point(coords[0])),
+        _ => Some(Part::Line(coords.clone())),
     }
 }
 
 fn from_part(part: &Part) -> Coords {
     match part {
-        Part::Line(l) => l.0.iter().map(|c| [c.x, c.y]).collect(),
-        Part::Point(p) => vec![[p.x(), p.y()]],
+        Part::Line(l) => l.clone(),
+        Part::Point(p) => vec![*p],
     }
 }
 
@@ -44,13 +33,9 @@ fn from_geometry(g: &[Part]) -> PyGeometry {
     g.iter().map(from_part).collect()
 }
 
-fn from_ring(ring: &LineString<f64>) -> Coords {
-    ring.0.iter().map(|c| [c.x, c.y]).collect()
-}
-
-/// Returns `(kept, removed_parts, removed, wholly_removed, mask)`: `kept` is
+/// Returns `(kept, removed_parts, removed, wholly_removed)`: `kept` is
 /// `(index, parts)` in the order geometries were kept, `removed_parts` is
-/// aligned with the input. `progress`, if given, is called as
+/// aligned with the input. `mask` polygons clip every stroke. `progress`, if given, is called as
 /// `progress(done, total)` about a hundred times per run.
 #[pyfunction]
 #[pyo3(signature = (
@@ -91,10 +76,8 @@ fn deoverlap(
         .iter()
         .map(|g| g.iter().filter_map(to_part).collect())
         .collect();
-    let mask = mask
-        .iter()
-        .map(|(ext, ints)| Polygon::new(to_ring(ext), ints.iter().map(to_ring).collect()))
-        .collect();
+    let polygons = mask.into_iter().map(|(exterior, interiors)| Polygon { exterior, interiors }).collect();
+    let mask = Mask { capsules: Vec::new(), polygons };
     let opts = Options { tolerance, prefer, angle, self_overlap, min_length, drop, keep_duplicates, mask };
 
     let mut callback_error: Option<PyErr> = None;
@@ -126,12 +109,7 @@ fn deoverlap(
         .collect();
     let removed_parts = r.removed_parts.iter().map(|g| g.as_deref().map(from_geometry)).collect();
     let removed = r.removed.iter().map(from_part).collect();
-    let mask = r
-        .mask
-        .iter()
-        .map(|p| (from_ring(p.exterior()), p.interiors().iter().map(from_ring).collect()))
-        .collect();
-    Ok((kept, removed_parts, removed, r.wholly_removed, mask))
+    Ok((kept, removed_parts, removed, r.wholly_removed))
 }
 
 #[pymodule]
