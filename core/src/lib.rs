@@ -107,6 +107,9 @@ impl Options {
 pub struct DeoverlapResult {
     /// Surviving parts, aligned with the input (`None` = nothing kept).
     pub kept_parts: Vec<Option<Geometry>>,
+    /// Indices of kept inputs in the order they were kept: priority order,
+    /// or input order in `segments` mode.
+    pub kept_order: Vec<usize>,
     /// Removed pieces per input, filled when `keep_duplicates` is set.
     pub removed_parts: Vec<Option<Geometry>>,
     /// All removed pieces in processing order, when `keep_duplicates` is set.
@@ -122,9 +125,9 @@ impl DeoverlapResult {
         Self { kept_parts: vec![None; n], removed_parts: vec![None; n], ..Self::default() }
     }
 
-    /// Kept geometries in input order.
+    /// Kept geometries in the order they were kept.
     pub fn kept(&self) -> impl Iterator<Item = &Geometry> {
-        self.kept_parts.iter().flatten()
+        self.kept_order.iter().filter_map(|&i| self.kept_parts[i].as_ref())
     }
 }
 
@@ -193,6 +196,7 @@ pub fn deoverlap(geoms: &[Geometry], opts: &Options) -> DeoverlapResult {
             }
         }
         result.kept_parts[i] = Some(reassembled);
+        result.kept_order.push(i);
     }
 
     result.mask = index.into_polygons();
@@ -283,6 +287,7 @@ fn deoverlap_segments(geoms: &[Geometry], opts: &Options, angle_tol_rad: f64) ->
             }
         }
         result.kept_parts[origin] = Some(reassembled);
+        result.kept_order.push(origin);
     }
 
     result.mask = index.into_polygons();

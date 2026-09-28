@@ -143,9 +143,10 @@ Iterating the result still yields the legacy
 
 ## Performance notes
 
-The heavy lifting is GEOS (via Shapely). The Python loop avoids rebuilding the
-spatial index on every insert (`tree_rebuild_every`) and periodically dissolves
-the mask when bearings are not needed (`mask_union_every`).
+The engine is written in Rust (on the [`geo`](https://crates.io/crates/geo)
+crate) and ships as a compiled extension, so `pip install` needs no Rust
+toolchain on the supported platforms. On the MacArthur Maze map below
+(1473 paths) a run takes well under a second.
 
 ## vpype plugin
 
@@ -296,9 +297,6 @@ deoverlap(
     segment_adjacency=1,
     group=True,
     keep_duplicates=False,
-    progress_bar=False,
     mask=None,
-    tree_rebuild_every=32,
-    mask_union_every=64,
 ) -> DeoverlapResult
 ```

@@ -14,7 +14,7 @@ type PyGeometry = Vec<Coords>;
 type PyPolygon = (Coords, Vec<Coords>);
 
 type Output = (
-    Vec<Option<PyGeometry>>,
+    Vec<(usize, PyGeometry)>,
     Vec<Option<PyGeometry>>,
     Vec<Coords>,
     Vec<usize>,
@@ -48,8 +48,9 @@ fn from_ring(ring: &LineString<f64>) -> Coords {
     ring.0.iter().map(|c| [c.x, c.y]).collect()
 }
 
-/// Returns `(kept_parts, removed_parts, removed, wholly_removed, mask)`,
-/// the first two aligned with the input.
+/// Returns `(kept, removed_parts, removed, wholly_removed, mask)`: `kept` is
+/// `(index, parts)` in the order geometries were kept, `removed_parts` is
+/// aligned with the input.
 #[pyfunction]
 #[pyo3(signature = (
     geometries, tolerance, *, keep = "first", mode = "crop", min_length = 0.0,
@@ -107,7 +108,11 @@ fn deoverlap(
 
     let r = py.detach(|| deoverlap_core::deoverlap(&geoms, &opts));
 
-    let kept = r.kept_parts.iter().map(|g| g.as_deref().map(from_geometry)).collect();
+    let kept = r
+        .kept_order
+        .iter()
+        .filter_map(|&i| r.kept_parts[i].as_deref().map(|g| (i, from_geometry(g))))
+        .collect();
     let removed_parts = r.removed_parts.iter().map(|g| g.as_deref().map(from_geometry)).collect();
     let removed = r.removed.iter().map(from_part).collect();
     let mask = r

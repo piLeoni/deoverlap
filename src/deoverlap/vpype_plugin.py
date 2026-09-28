@@ -106,13 +106,6 @@ def _layer_from_geoms(geoms) -> vp.LineCollection:
     help="Store removed pieces on a new layer.",
 )
 @click.option(
-    "-p",
-    "--progress",
-    is_flag=True,
-    default=False,
-    help="Show a progress bar.",
-)
-@click.option(
     "-l",
     "--layer",
     type=vpype_cli.LayerType(accept_multiple=True),
@@ -132,7 +125,6 @@ def deoverlap_cmd(
     segments: bool,
     segment_adjacency: int,
     keep_duplicates: bool,
-    progress: bool,
     layer: Union[int, List[int]],
 ) -> vp.Document:
     """Remove near-coincident strokes using corridor de-overlap.
@@ -165,7 +157,6 @@ def deoverlap_cmd(
             segment_adjacency=segment_adjacency,
             group=True,
             keep_duplicates=keep_duplicates,
-            progress_bar=progress,
         )
         new_document.add(_layer_from_geoms(result.kept), layer_id=lid)
 
