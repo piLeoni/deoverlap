@@ -50,12 +50,14 @@ fn from_ring(ring: &LineString<f64>) -> Coords {
 
 /// Returns `(kept, removed_parts, removed, wholly_removed, mask)`: `kept` is
 /// `(index, parts)` in the order geometries were kept, `removed_parts` is
-/// aligned with the input.
+/// aligned with the input. `progress`, if given, is called as
+/// `progress(done, total)` about a hundred times per run.
 #[pyfunction]
 #[pyo3(signature = (
     geometries, tolerance, *, keep = "first", mode = "crop", min_length = 0.0,
     drop_fraction = 0.5, parallel_only = false, parallel_angle = 30.0,
     segments = false, segment_adjacency = 1, keep_duplicates = false, mask = Vec::new(),
+    progress = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn deoverlap(
@@ -72,6 +74,7 @@ fn deoverlap(
     segment_adjacency: i64,
     keep_duplicates: bool,
     mask: Vec<PyPolygon>,
+    progress: Option<Py<PyAny>>,
 ) -> PyResult<Output> {
     let keep = match keep {
         "first" => KeepPolicy::First,
@@ -106,7 +109,27 @@ fn deoverlap(
         mask,
     };
 
-    let r = py.detach(|| deoverlap_core::deoverlap(&geoms, &opts));
+    let mut callback_error: Option<PyErr> = None;
+    let r = py.detach(|| {
+        let Some(cb) = progress else {
+            return deoverlap_core::deoverlap(&geoms, &opts);
+        };
+        let mut next = 0;
+        deoverlap_core::deoverlap_with_progress(&geoms, &opts, &mut |done, total| {
+            if (done < next && done < total) || callback_error.is_some() {
+                return;
+            }
+            next = done + (total / 100).max(1);
+            Python::attach(|py| {
+                if let Err(e) = cb.call1(py, (done, total)) {
+                    callback_error = Some(e);
+                }
+            });
+        })
+    });
+    if let Some(e) = callback_error {
+        return Err(e);
+    }
 
     let kept = r
         .kept_order

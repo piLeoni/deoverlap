@@ -37,6 +37,11 @@ from shapely.geometry.base import BaseGeometry
 
 from . import _core
 
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover
+    tqdm = None  # type: ignore
+
 # =============================================================================
 #  Public types
 # =============================================================================
@@ -170,6 +175,7 @@ def deoverlap(
     segment_adjacency: int = 1,
     group: bool = True,
     keep_duplicates: bool = False,
+    progress_bar: bool = False,
     mask: Optional[Sequence[Polygon]] = None,
     preserve_types: Optional[bool] = None,
 ) -> DeoverlapResult:
@@ -195,24 +201,38 @@ def deoverlap(
     for m in mask or []:
         mask_polys.extend(m.geoms if isinstance(m, MultiPolygon) else [m])
 
-    kept, removed_parts, removed, wholly, mask_out = _core.deoverlap(
-        [_to_coords(g) for g in geoms],
-        tolerance,
-        keep=keep_policy.value,
-        mode=clip_mode.value,
-        min_length=min_length,
-        drop_fraction=drop_fraction,
-        parallel_only=parallel_only,
-        parallel_angle=parallel_angle,
-        segments=segments,
-        segment_adjacency=segment_adjacency,
-        keep_duplicates=keep_duplicates,
-        mask=[
-            (get_coordinates(p.exterior).tolist(), [get_coordinates(r).tolist() for r in p.interiors])
-            for p in mask_polys
-            if not p.is_empty
-        ],
-    )
+    bar = None
+    if progress_bar and tqdm is not None:
+        desc = "De-overlapping segments" if segments else "De-overlapping"
+        bar = tqdm(desc=desc, total=len(geoms))
+
+    def on_progress(done: int, total: int) -> None:
+        bar.total = total
+        bar.update(done - bar.n)
+
+    try:
+        kept, removed_parts, removed, wholly, mask_out = _core.deoverlap(
+            [_to_coords(g) for g in geoms],
+            tolerance,
+            keep=keep_policy.value,
+            mode=clip_mode.value,
+            min_length=min_length,
+            drop_fraction=drop_fraction,
+            parallel_only=parallel_only,
+            parallel_angle=parallel_angle,
+            segments=segments,
+            segment_adjacency=segment_adjacency,
+            keep_duplicates=keep_duplicates,
+            mask=[
+                (get_coordinates(p.exterior).tolist(), [get_coordinates(r).tolist() for r in p.interiors])
+                for p in mask_polys
+                if not p.is_empty
+            ],
+            progress=on_progress if bar is not None else None,
+        )
+    finally:
+        if bar is not None:
+            bar.close()
 
     snap = tolerance * _SNAP_FRACTION
     result = DeoverlapResult(wholly_removed=list(wholly))

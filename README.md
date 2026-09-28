@@ -297,6 +297,7 @@ deoverlap(
     segment_adjacency=1,
     group=True,
     keep_duplicates=False,
+    progress_bar=False,
     mask=None,
 ) -> DeoverlapResult
 ```

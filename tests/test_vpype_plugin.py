@@ -35,6 +35,15 @@ def test_plugin_crops_near_parallel_lines():
     assert len(layer) >= 1
 
 
+def test_plugin_progress_flag(capsys):
+    doc = vpype.Document()
+    doc.add(vpype.LineCollection([_line(0, 0, 10, 0), _line(1, 0.05, 11, 0.05)]), 1)
+
+    result = vpype_cli.execute("deoverlap -t 0.1mm --progress", document=doc)
+    assert len(result.layers[1]) >= 1
+    assert "De-overlapping" in capsys.readouterr().err
+
+
 def test_plugin_respects_layer_flag():
     doc = vpype.Document()
     a = vpype.LineCollection([_line(0, 0, 5, 0), _line(0, 0.05, 5, 0.05)])

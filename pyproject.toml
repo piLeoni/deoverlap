@@ -27,6 +27,7 @@ classifiers = [
 
 dependencies = [
     "shapely>=2.0",
+    "tqdm",
 ]
 
 [project.optional-dependencies]

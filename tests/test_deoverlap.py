@@ -221,6 +221,32 @@ def test_kept_plus_removed_conserves_length(segments):
     assert kept + removed == pytest.approx(total_in, rel=1e-4)
 
 
+@pytest.mark.parametrize("segments", [False, True])
+def test_progress_reaches_the_total(segments):
+    from deoverlap import _core
+
+    calls = []
+    geoms = [[[[0.0, 0.1 * k], [5.0, 0.1 * k]]] for k in range(300)]
+    _core.deoverlap(geoms, 0.1, segments=segments, progress=lambda d, t: calls.append((d, t)))
+    assert calls[-1] == (300, 300)
+    assert len(calls) <= 102
+    assert [d for d, _ in calls] == sorted(d for d, _ in calls)
+
+    plain = deoverlap([LineString(g[0]) for g in geoms], 0.1, segments=segments)
+    with_bar = deoverlap([LineString(g[0]) for g in geoms], 0.1, segments=segments, progress_bar=True)
+    assert [g.wkt for g in with_bar.kept] == [g.wkt for g in plain.kept]
+
+
+def test_progress_callback_errors_propagate():
+    from deoverlap import _core
+
+    def boom(done, total):
+        raise RuntimeError("stop")
+
+    with pytest.raises(RuntimeError, match="stop"):
+        _core.deoverlap([[[[0.0, 0.0], [1.0, 0.0]]]], 0.1, progress=boom)
+
+
 def test_empty_input():
     result = deoverlap([], 0.1)
     assert result.kept == []

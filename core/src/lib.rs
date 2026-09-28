@@ -132,9 +132,19 @@ impl DeoverlapResult {
 }
 
 pub fn deoverlap(geoms: &[Geometry], opts: &Options) -> DeoverlapResult {
+    deoverlap_with_progress(geoms, opts, &mut |_, _| {})
+}
+
+/// Like [`deoverlap`], calling `progress(done, total)` as work advances.
+/// `total` counts geometries, or exploded edges in `segments` mode.
+pub fn deoverlap_with_progress(
+    geoms: &[Geometry],
+    opts: &Options,
+    progress: &mut dyn FnMut(usize, usize),
+) -> DeoverlapResult {
     let angle_tol_rad = opts.parallel_angle.to_radians();
     if opts.segments {
-        return deoverlap_segments(geoms, opts, angle_tol_rad);
+        return deoverlap_segments(geoms, opts, angle_tol_rad, progress);
     }
 
     let mut index = MaskIndex::new(&opts.mask, opts.parallel_only, -1);
@@ -143,7 +153,8 @@ pub fn deoverlap(geoms: &[Geometry], opts: &Options) -> DeoverlapResult {
     let want_removed = opts.keep_duplicates;
 
     let lengths: Vec<f64> = geoms.iter().map(|g| geom_length(g)).collect();
-    for i in priority_order(&lengths, opts.keep) {
+    for (done, i) in priority_order(&lengths, opts.keep).into_iter().enumerate() {
+        progress(done, geoms.len());
         let geom = &geoms[i];
         if geom.is_empty() {
             continue;
@@ -198,6 +209,7 @@ pub fn deoverlap(geoms: &[Geometry], opts: &Options) -> DeoverlapResult {
         result.kept_parts[i] = Some(reassembled);
         result.kept_order.push(i);
     }
+    progress(geoms.len(), geoms.len());
 
     result.mask = index.into_polygons();
     result
@@ -214,7 +226,12 @@ impl DeoverlapResult {
 }
 
 /// Self-overlap path: work on exploded edges, then regroup by origin.
-fn deoverlap_segments(geoms: &[Geometry], opts: &Options, angle_tol_rad: f64) -> DeoverlapResult {
+fn deoverlap_segments(
+    geoms: &[Geometry],
+    opts: &Options,
+    angle_tol_rad: f64,
+    progress: &mut dyn FnMut(usize, usize),
+) -> DeoverlapResult {
     let mut index = MaskIndex::new(&opts.mask, opts.parallel_only, opts.segment_adjacency);
     let mut result = DeoverlapResult::with_len(geoms.len());
     let snap = opts.tolerance * SNAP_FRACTION;
@@ -234,7 +251,8 @@ fn deoverlap_segments(geoms: &[Geometry], opts: &Options, angle_tol_rad: f64) ->
     }
 
     let parent_lengths: Vec<f64> = segs.iter().map(|s| s.parent_length).collect();
-    for si in priority_order(&parent_lengths, opts.keep) {
+    for (done, si) in priority_order(&parent_lengths, opts.keep).into_iter().enumerate() {
+        progress(done, segs.len());
         let s = &segs[si];
         let whole = Part::Line(LineString::new(vec![s.a, s.b]));
         let angle = opts.parallel_only.then(|| edge_angle(s.a, s.b));
@@ -266,6 +284,7 @@ fn deoverlap_segments(geoms: &[Geometry], opts: &Options, angle_tol_rad: f64) ->
         }
         kept_by_origin[s.origin].extend(kept);
     }
+    progress(segs.len(), segs.len());
 
     for (origin, pieces) in kept_by_origin.into_iter().enumerate() {
         if !saw_origin[origin] {
