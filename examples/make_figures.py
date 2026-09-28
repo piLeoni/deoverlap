@@ -270,6 +270,21 @@ def osm_map(tolerance=0.5, pen=0.5, angle=90, zoom_center=(55, -42), zoom_size=1
     _save(fig, "osm_zoom.png")
     print(f"map: {len(geoms)} paths, {before:.0f} -> {after:.0f} mm ({saved:.1f}% removed)")
 
+    fig, axes = plt.subplots(2, 2, figsize=(10, 9.4))
+    for col, degrees in enumerate([30, angle]):
+        ra = deoverlap(geoms, tolerance, angle=degrees, min_length=2 * pen, keep_duplicates=True)
+        _mask(axes[0, col], ra.mask, lw=0.4)
+        _draw(axes[0, col], ra.kept, KEPT, 1.4)
+        _draw(axes[0, col], ra.removed, REMOVED, 1.8, zorder=3)
+        crossings = "crossings kept" if degrees < 90 else "crossings cut"
+        _frame(axes[0, col], f"--angle {degrees}: {crossings}", zoom)
+        _ink(axes[1, col], ra.kept, pen, zoom)
+        _frame(axes[1, col], f"after, {pen} mm pen", zoom)
+    _legend(fig)
+    fig.text(0.5, 0.0, "at 30° a crossing keeps both roads, so the pen passes "
+             "twice where they meet", ha="center", fontsize=9, color="#555")
+    _save(fig, "osm_angle.png")
+
 
 def main():
     hero()

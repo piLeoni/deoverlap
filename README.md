@@ -11,10 +11,12 @@ each kept stroke and crops (or drops) later strokes that fall inside it.
 
 ![A city map at pen width: before, what deoverlap removed, after](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_zoom.png)
 
-Oakland's MacArthur Maze drawn with a 0.5 mm pen: doubled carriageways and
-junctions darken where the pen passes twice (left); deoverlap removes the red
-strokes (middle) and the ink becomes one even layer (right). See
-[A real map](#a-real-map-the-macarthur-maze) below.
+![The whole card: removed ink in red, the dashed box is the zoom above](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_map.png)
+
+Oakland's MacArthur Maze drawn with a 0.5 mm pen. In the zoom (the dashed box
+on the card), doubled carriageways and junctions darken where the pen passes
+twice (left); deoverlap removes the red strokes (middle) and the ink becomes
+one even layer (right). See [A real map](#a-real-map-the-macarthur-maze) below.
 
 ```bash
 pip install deoverlap
@@ -245,16 +247,22 @@ dark spot of doubled ink.
 
 Cutting leaves fragments; almost every piece under 1 mm on this card is one.
 `-m 1mm` (two pen widths) drops them. The path count goes from 1473 to 860 and
-the drawn length drops by 35%. With the default `--angle 30` (crossings left
-alone) and the same `-m 1mm`, the card loses about 23%.
+the drawn length drops by 35%.
 
-![The whole card: removed ink in red, the dashed box is the zoom at the top](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_map.png)
-
-The zoom at the top of this page is the dashed box. Its ink panels are blended
+The images at the top of this page show this run. Their ink panels are blended
 like real ink: every pass multiplies the colour, so the darker the blue, the
 more times the pen went over the same spot. Before, the dark bands are doubled
 carriageways and the dark dots are junctions, where a round pen tip lands on
 ink that is already there. After, the ink is one even layer.
+
+With the default `--angle 30` crossings are left alone: parallel runs are
+still merged, but both roads are drawn through every junction, and the card
+loses about 23% instead of 35%. The same zoom, crossings kept and cut:
+
+![The zoom at --angle 30 and --angle 90: at 30 the crossings keep both roads and leave dark spots, at 90 they are cut](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_angle.png)
+
+Keep crossings when every stroke must stay continuous (e.g. for later
+editing); cut them when only the ink on paper matters.
 
 To try another place (needs `pip install osmnx`):
 
