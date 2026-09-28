@@ -82,7 +82,8 @@ def _layer_from_geoms(geoms) -> vp.LineCollection:
     "--parallel-angle",
     type=float,
     default=30.0,
-    help="Max bearing difference in degrees for --parallel-only (default: 30).",
+    help="Max local bearing difference in degrees for --parallel-only; raise it "
+    "to also trim steeper merges (default: 30).",
 )
 @click.option(
     "--segments/--no-segments",
@@ -139,8 +140,7 @@ def deoverlap_cmd(
     Unlike endpoint-only deduplicate, this removes (or crops) paths that run
     within TOLERANCE of an earlier kept path — the case that bleeds on a
     plotter. With --segments, opposite sides of a single thin outline can
-    suppress each other. Layers are handled one at a time; park stipple / dab
-    layers should be excluded with -l.
+    suppress each other. Layers are handled one at a time.
     """
     layer_ids = vpype_cli.multiple_to_layer_ids(layer, document)
     new_document = document.empty_copy()

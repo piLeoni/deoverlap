@@ -1,7 +1,7 @@
 """Unit tests for deoverlap 3.x — behaviour, not screenshots.
 
-Visual regression plots live behind ``DEOVERLAP_PLOT=1`` so a normal pytest
-run stays fast and dependency-light.
+README figures are rendered separately by ``examples/make_figures.py`` so a
+normal pytest run stays fast and dependency-light.
 """
 
 from __future__ import annotations
@@ -124,6 +124,18 @@ def test_parallel_only_preserves_crossing():
     assert crossing.kept_parts[1].length == pytest.approx(vertical.length, abs=0.05)
 
 
+def test_parallel_only_uses_local_bearing():
+    """A U whose chord is horizontal still has a vertical arm beside the line."""
+    wall = LineString([(0, 0), (0, 10)])
+    u_turn = LineString([(0.05, 9), (0.05, 1), (3, 1), (3, 9)])
+    result = deoverlap([wall, u_turn], 0.1, parallel_only=True, keep="first")
+    kept = result.kept_parts[1]
+    # The left arm (8 long) is inside the wall's corridor and runs parallel.
+    assert kept.length == pytest.approx(u_turn.length - 8, abs=0.3)
+    # The rest stays one continuous stroke.
+    assert kept.geom_type == "LineString"
+
+
 def test_min_length_drops_stubs():
     a = LineString([(0, 0), (2, 0)])
     # Runs almost on top of a, but sticks out by 0.05 on the right.
@@ -154,6 +166,30 @@ def test_mask_carries_across_stages():
     r2 = deoverlap(batch2, 0.1, mask=r1.mask, keep_duplicates=True)
     assert r2.kept[0].length < batch2[0].length
     assert len(r2.removed) > 0
+
+
+@pytest.mark.parametrize("segments", [False, True])
+def test_kept_plus_removed_conserves_length(segments):
+    """Removed pieces must not double-count ink that was actually kept."""
+    import math
+
+    geoms = []
+    for k in range(12):
+        a = k * 0.37
+        pts = [
+            (t * 0.731 + 0.05 * math.sin(t * 1.3 + a), 0.11 * k + 0.043 * math.cos(t + a))
+            for t in range(9)
+        ]
+        geoms.append(LineString(pts))
+    result = deoverlap(
+        geoms, 0.1, keep="longest", parallel_only=True, segments=segments,
+        keep_duplicates=True,
+    )
+    total_in = sum(g.length for g in geoms)
+    kept = sum(g.length for g in result.kept)
+    removed = sum(g.length for g in result.removed)
+    assert kept < total_in
+    assert kept + removed == pytest.approx(total_in, rel=1e-4)
 
 
 def test_empty_input():

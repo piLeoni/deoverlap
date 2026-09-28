@@ -36,3 +36,9 @@ coverage.xml
 # Operating System files
 .DS_Store
 Thumbs.db
+
+# Generated demo outputs (see README walkthrough)
+examples/out_*.svg
+
+# osmnx HTTP cache from examples/fetch_osm_example.py
+cache/

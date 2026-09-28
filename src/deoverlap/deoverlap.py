@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Iterator, List, Optional, Sequence, Union
 
-from shapely import union_all
+from shapely import line_merge, union_all
 from shapely.geometry import (
     GeometryCollection,
     LineString,
@@ -93,6 +93,7 @@ class DeoverlapResult:
 # =============================================================================
 
 _ROBUSTNESS_BUFFER = 1e-9
+_SNAP_FRACTION = 1e-6
 
 
 def flatten_geometries(geoms: GeomInput) -> List[FlatGeom]:
@@ -226,13 +227,27 @@ def _filter_min_length(geom: BaseGeometry, min_length: float) -> BaseGeometry:
     return geom
 
 
-def _split_removed(original: BaseGeometry, kept: BaseGeometry) -> BaseGeometry:
+def _split_removed(
+    original: BaseGeometry, kept: BaseGeometry, snap: float
+) -> BaseGeometry:
     source = original.boundary if isinstance(original, (Polygon, MultiPolygon)) else original
     if source.is_empty:
         return source
     if kept.is_empty:
         return source
-    return source.difference(kept)
+    # Clipped pieces drift off the original segments by float noise, so a
+    # plain line-line difference reports kept runs as removed.
+    return source.difference(kept.buffer(snap))
+
+
+def _edges(geom: BaseGeometry) -> Iterator[LineString]:
+    """2-point edges of every lineal part, in order."""
+    for part in flatten_geometries(geom):
+        if not isinstance(part, LineString):
+            continue
+        coords = _dedupe_coords(part.coords)
+        for a, b in zip(coords, coords[1:]):
+            yield LineString([a, b])
 
 
 def _explode_segments(
@@ -368,6 +383,10 @@ class _MaskIndex:
             self._since_rebuild = 0
         return self._tree
 
+    def near(self, geom: BaseGeometry) -> bool:
+        tree = self._ensure_tree()
+        return tree is not None and len(tree.query(geom)) > 0
+
     def local_mask(
         self,
         geom: BaseGeometry,
@@ -440,6 +459,36 @@ def _clip_one(
         return part
     clipped = part.difference(local.buffer(_ROBUSTNESS_BUFFER))
     return clipped if not clipped.is_empty else part.__class__()
+
+
+def _clip_local(
+    part: BaseGeometry,
+    mask: _MaskIndex,
+    *,
+    angle_tol_rad: float,
+    snap: float,
+) -> BaseGeometry:
+    """Clip edge by edge, each against corridors parallel to *that* edge.
+
+    One bearing per path (first to last vertex) misjudges curves: a ramp that
+    runs alongside a road for a while can have a chord pointing elsewhere.
+    """
+    if not isinstance(part, LineString) or not mask.near(part):
+        return _clip_one(part, mask, angle=None, angle_tol_rad=angle_tol_rad, seg_id=None)
+    pieces: list[LineString] = []
+    changed = False
+    for edge in _edges(part):
+        kept = _clip_one(
+            edge, mask, angle=_line_angle(edge), angle_tol_rad=angle_tol_rad, seg_id=None
+        )
+        if _length(kept) < edge.length - snap:
+            changed = True
+        pieces.extend(p for p in flatten_geometries(kept) if isinstance(p, LineString))
+    if not changed:
+        return part
+    if not pieces:
+        return LineString()
+    return line_merge(MultiLineString(pieces))
 
 
 def deoverlap(
@@ -524,16 +573,18 @@ def deoverlap(
         if not parts:
             continue
 
-        angle = _line_angle(geom) if parallel_only else None
-        kept_sub = [
-            k
-            for part in parts
-            if not (
-                k := _clip_one(
-                    part, index, angle=angle, angle_tol_rad=angle_tol_rad, seg_id=None
-                )
-            ).is_empty
-        ]
+        snap = tolerance * _SNAP_FRACTION
+        if parallel_only:
+            clipped = (
+                _clip_local(part, index, angle_tol_rad=angle_tol_rad, snap=snap)
+                for part in parts
+            )
+        else:
+            clipped = (
+                _clip_one(part, index, angle=None, angle_tol_rad=angle_tol_rad, seg_id=None)
+                for part in parts
+            )
+        kept_sub = [k for k in clipped if not k.is_empty]
 
         if not kept_sub:
             result.wholly_removed.append(i)
@@ -558,7 +609,7 @@ def deoverlap(
                     result.removed.append(geom)
                 continue
 
-        removed_portion = _split_removed(geom, reassembled)
+        removed_portion = _split_removed(geom, reassembled, snap)
         if keep_duplicates and not removed_portion.is_empty:
             result.removed_parts[i] = removed_portion
             result.removed.extend(flatten_geometries(removed_portion))
@@ -569,7 +620,11 @@ def deoverlap(
         else:
             result.kept.extend(flatten_geometries(reassembled))
 
-        index.add(reassembled, tolerance, angle)
+        if parallel_only:
+            for edge in _edges(reassembled):
+                index.add(edge, tolerance, _line_angle(edge))
+        else:
+            index.add(reassembled, tolerance, None)
 
     result.mask = index.as_list()
     return result
@@ -635,7 +690,7 @@ def _deoverlap_segments(
             continue
 
         if keep_duplicates and _length(kept) + 1e-12 < _length(seg):
-            removed = seg.difference(kept)
+            removed = seg.difference(kept.buffer(tolerance * _SNAP_FRACTION))
             if not removed.is_empty:
                 result.removed.extend(flatten_geometries(removed))
 
@@ -663,7 +718,7 @@ def _deoverlap_segments(
             result.kept.extend(flatten_geometries(reassembled))
 
         if keep_duplicates:
-            removed = _split_removed(geoms[origin], reassembled)
+            removed = _split_removed(geoms[origin], reassembled, tolerance * _SNAP_FRACTION)
             if not removed.is_empty:
                 result.removed_parts[origin] = removed
 

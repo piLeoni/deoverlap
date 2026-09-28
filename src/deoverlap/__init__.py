@@ -1,6 +1,6 @@
 """De-overlap Shapely geometries that sit within a tolerance of each other."""
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 from .deoverlap import (
     ClipMode,
