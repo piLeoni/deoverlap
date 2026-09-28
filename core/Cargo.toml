@@ -1,0 +1,18 @@
+[package]
+name = "deoverlap-core"
+version = "0.1.0"
+edition = "2021"
+description = "Remove overlapping strokes from vector drawings (Rust core of deoverlap)"
+license = "MIT"
+repository = "https://github.com/piLeoni/deoverlap"
+
+[dependencies]
+geo = "0.33"
+rstar = "0.12"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+debug = false
