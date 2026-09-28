@@ -9,10 +9,3 @@ repository = "https://github.com/piLeoni/deoverlap"
 [dependencies]
 geo = "0.33"
 rstar = "0.12"
-
-[dev-dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-[profile.release]
-debug = false

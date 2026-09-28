@@ -1,0 +1,16 @@
+[package]
+name = "deoverlap-python"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for deoverlap-core"
+license = "MIT"
+publish = false
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+deoverlap-core = { path = "../../core" }
+geo = "0.33"
+pyo3 = { version = "0.29", features = ["abi3-py310"] }

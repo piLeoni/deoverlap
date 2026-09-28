@@ -17,11 +17,12 @@ unless ``group=False``.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Iterable, Iterator, List, Optional, Sequence, Union
 
-from shapely import line_merge, union_all
+from shapely import get_coordinates, line_merge, union_all
 from shapely.geometry import (
     GeometryCollection,
     LineString,
@@ -39,6 +40,11 @@ try:
     from tqdm import tqdm
 except ImportError:  # pragma: no cover
     tqdm = None  # type: ignore
+
+try:
+    from . import _core
+except ImportError:  # installed from source without the Rust extension
+    _core = None
 
 # =============================================================================
 #  Public types
@@ -528,10 +534,15 @@ def deoverlap(
     mask_union_every: int = 64,
     preserve_types: Optional[bool] = None,
     track_origins: bool = False,
+    engine: str = "auto",
 ) -> DeoverlapResult:
     """De-overlap geometries that fall within ``tolerance`` of each other.
 
     Args:
+        engine: ``"rust"``, ``"python"`` or ``"auto"`` (Rust when the compiled
+            core is available). The ``DEOVERLAP_ENGINE`` environment variable
+            overrides ``"auto"``. The Rust engine ignores ``progress_bar``,
+            ``tree_rebuild_every`` and ``mask_union_every``.
         segments: If true, explode every path into edge segments and allow
             self-overlap — opposite sides of a thin outline can suppress each
             other. Adjacent segments on the same chain (within
@@ -548,6 +559,23 @@ def deoverlap(
     angle_tol_rad = math.radians(parallel_angle)
 
     geoms = _as_list(geometries)
+    if _pick_engine(engine) == "rust":
+        return _deoverlap_rust(
+            geoms,
+            tolerance,
+            keep_policy=keep_policy,
+            clip_mode=clip_mode,
+            min_length=min_length,
+            drop_fraction=drop_fraction,
+            parallel_only=parallel_only,
+            parallel_angle=parallel_angle,
+            segments=segments,
+            segment_adjacency=segment_adjacency,
+            group=group,
+            keep_duplicates=keep_duplicates,
+            mask=mask,
+        )
+
     index = _MaskIndex(
         mask,
         rebuild_every=tree_rebuild_every,
@@ -644,6 +672,110 @@ def deoverlap(
             index.add(reassembled, tolerance, None)
 
     result.mask = index.as_list()
+    return result
+
+
+def _pick_engine(engine: str) -> str:
+    if engine == "auto":
+        engine = os.environ.get("DEOVERLAP_ENGINE", "auto")
+    if engine == "auto":
+        return "rust" if _core is not None else "python"
+    if engine not in ("rust", "python"):
+        raise ValueError(f"unknown engine: {engine!r}")
+    if engine == "rust" and _core is None:
+        raise ImportError("deoverlap was installed without its Rust core")
+    return engine
+
+
+def _to_coords(geom: BaseGeometry) -> list[list[list[float]]]:
+    return [get_coordinates(p).tolist() for p in flatten_geometries(geom)]
+
+
+def _from_coords(parts: Sequence[Sequence[Sequence[float]]]) -> List[FlatGeom]:
+    return [Point(p[0]) if len(p) == 1 else LineString(p) for p in parts]
+
+
+def _grouped(
+    parts: List[FlatGeom], original: Optional[BaseGeometry] = None, snap: float = 0.0
+) -> BaseGeometry:
+    """One geometry from parts, typed like the Python engine's output.
+
+    An ``original`` polygon whose rings all survived is returned as is.
+    """
+    if isinstance(original, Polygon) and _length(original) - sum(_length(p) for p in parts) <= snap:
+        return original
+    if len(parts) == 1:
+        return parts[0]
+    if all(isinstance(p, LineString) for p in parts):
+        return MultiLineString(parts)
+    if all(isinstance(p, Point) for p in parts):
+        return MultiPoint(parts)
+    return GeometryCollection(parts)
+
+
+def _deoverlap_rust(
+    geoms: Sequence[BaseGeometry],
+    tolerance: float,
+    *,
+    keep_policy: KeepPolicy,
+    clip_mode: ClipMode,
+    min_length: float,
+    drop_fraction: float,
+    parallel_only: bool,
+    parallel_angle: float,
+    segments: bool,
+    segment_adjacency: int,
+    group: bool,
+    keep_duplicates: bool,
+    mask: Optional[Sequence[Polygon]],
+) -> DeoverlapResult:
+    mask_polys: list[Polygon] = []
+    for m in mask or []:
+        mask_polys.extend(m.geoms if isinstance(m, MultiPolygon) else [m])
+    kept_parts, removed_parts, removed, wholly, mask_out = _core.deoverlap(
+        [[] if g is None or g.is_empty else _to_coords(g) for g in geoms],
+        tolerance,
+        keep=keep_policy.value,
+        mode=clip_mode.value,
+        min_length=min_length,
+        drop_fraction=drop_fraction,
+        parallel_only=parallel_only,
+        parallel_angle=parallel_angle,
+        segments=segments,
+        segment_adjacency=segment_adjacency,
+        keep_duplicates=keep_duplicates,
+        mask=[
+            (get_coordinates(p.exterior).tolist(), [get_coordinates(r).tolist() for r in p.interiors])
+            for p in mask_polys
+            if not p.is_empty
+        ],
+    )
+
+    snap = tolerance * _SNAP_FRACTION
+    result = DeoverlapResult(wholly_removed=list(wholly))
+    gone = set(wholly)
+    # Same order as the Python engine: priority order, or input order when
+    # segments are regrouped by origin.
+    order = (
+        range(len(geoms))
+        if segments
+        else _priority_order([_length(g) for g in geoms], keep_policy)
+    )
+    for i in order:
+        parts = kept_parts[i]
+        if parts is None:
+            continue
+        grouped = _grouped(_from_coords(parts), geoms[i], snap)
+        result.kept_parts[i] = grouped
+        if group:
+            result.kept.append(grouped)
+        else:
+            result.kept.extend(flatten_geometries(grouped))
+    for i, parts in enumerate(removed_parts):
+        if parts is not None:
+            result.removed_parts[i] = geoms[i] if i in gone else _grouped(_from_coords(parts))
+    result.removed = _from_coords(removed)
+    result.mask = [Polygon(ext, ints) for ext, ints in mask_out]
     return result
 
 

@@ -1,0 +1,125 @@
+//! Python bindings for the Rust core, imported as `deoverlap._core`.
+//!
+//! Geometries cross the boundary as plain coordinates: a geometry is a list
+//! of parts, a part is a list of `[x, y]`, and a single-coordinate part is a
+//! point. The Shapely conversion lives on the Python side.
+
+use deoverlap_core::{ClipMode, KeepPolicy, Options, Part};
+use geo::{LineString, Point, Polygon};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+
+type Coords = Vec<[f64; 2]>;
+type PyGeometry = Vec<Coords>;
+type PyPolygon = (Coords, Vec<Coords>);
+
+type Output = (
+    Vec<Option<PyGeometry>>,
+    Vec<Option<PyGeometry>>,
+    Vec<Coords>,
+    Vec<usize>,
+    Vec<PyPolygon>,
+);
+
+fn to_ring(coords: &Coords) -> LineString<f64> {
+    LineString::from(coords.iter().map(|c| (c[0], c[1])).collect::<Vec<_>>())
+}
+
+fn to_part(coords: &Coords) -> Option<Part> {
+    match coords.len() {
+        0 => None,
+        1 => Some(Part::Point(Point::new(coords[0][0], coords[0][1]))),
+        _ => Some(Part::Line(to_ring(coords))),
+    }
+}
+
+fn from_part(part: &Part) -> Coords {
+    match part {
+        Part::Line(l) => l.0.iter().map(|c| [c.x, c.y]).collect(),
+        Part::Point(p) => vec![[p.x(), p.y()]],
+    }
+}
+
+fn from_geometry(g: &[Part]) -> PyGeometry {
+    g.iter().map(from_part).collect()
+}
+
+fn from_ring(ring: &LineString<f64>) -> Coords {
+    ring.0.iter().map(|c| [c.x, c.y]).collect()
+}
+
+/// Returns `(kept_parts, removed_parts, removed, wholly_removed, mask)`,
+/// the first two aligned with the input.
+#[pyfunction]
+#[pyo3(signature = (
+    geometries, tolerance, *, keep = "first", mode = "crop", min_length = 0.0,
+    drop_fraction = 0.5, parallel_only = false, parallel_angle = 30.0,
+    segments = false, segment_adjacency = 1, keep_duplicates = false, mask = Vec::new(),
+))]
+#[allow(clippy::too_many_arguments)]
+fn deoverlap(
+    py: Python<'_>,
+    geometries: Vec<PyGeometry>,
+    tolerance: f64,
+    keep: &str,
+    mode: &str,
+    min_length: f64,
+    drop_fraction: f64,
+    parallel_only: bool,
+    parallel_angle: f64,
+    segments: bool,
+    segment_adjacency: i64,
+    keep_duplicates: bool,
+    mask: Vec<PyPolygon>,
+) -> PyResult<Output> {
+    let keep = match keep {
+        "first" => KeepPolicy::First,
+        "longest" => KeepPolicy::Longest,
+        "shortest" => KeepPolicy::Shortest,
+        other => return Err(PyValueError::new_err(format!("unknown keep policy: {other:?}"))),
+    };
+    let mode = match mode {
+        "crop" => ClipMode::Crop,
+        "drop" => ClipMode::Drop,
+        other => return Err(PyValueError::new_err(format!("unknown clip mode: {other:?}"))),
+    };
+    let geoms: Vec<Vec<Part>> = geometries
+        .iter()
+        .map(|g| g.iter().filter_map(to_part).collect())
+        .collect();
+    let mask = mask
+        .iter()
+        .map(|(ext, ints)| Polygon::new(to_ring(ext), ints.iter().map(to_ring).collect()))
+        .collect();
+    let opts = Options {
+        tolerance,
+        keep,
+        mode,
+        min_length,
+        drop_fraction,
+        parallel_only,
+        parallel_angle,
+        segments,
+        segment_adjacency,
+        keep_duplicates,
+        mask,
+    };
+
+    let r = py.detach(|| deoverlap_core::deoverlap(&geoms, &opts));
+
+    let kept = r.kept_parts.iter().map(|g| g.as_deref().map(from_geometry)).collect();
+    let removed_parts = r.removed_parts.iter().map(|g| g.as_deref().map(from_geometry)).collect();
+    let removed = r.removed.iter().map(from_part).collect();
+    let mask = r
+        .mask
+        .iter()
+        .map(|p| (from_ring(p.exterior()), p.interiors().iter().map(from_ring).collect()))
+        .collect();
+    Ok((kept, removed_parts, removed, r.wholly_removed, mask))
+}
+
+#[pymodule]
+fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(deoverlap, m)?)?;
+    Ok(())
+}

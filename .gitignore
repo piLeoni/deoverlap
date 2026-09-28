@@ -43,4 +43,5 @@ examples/out_*.svg
 # osmnx HTTP cache from examples/fetch_osm_example.py
 cache/
 
-core/target/
+target/
+src/deoverlap/*.so
