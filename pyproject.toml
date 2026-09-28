@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deoverlap"
-version = "3.2.0"
+version = "3.2.1"
 authors = [
   { name="Pietro Leoni", email="pietro.leoni@gmail.com" },
 ]

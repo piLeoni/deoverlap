@@ -2,12 +2,14 @@
 
 De-overlap Shapely geometries that sit within a tolerance of each other.
 
+Source, examples and issues: [github.com/piLeoni/deoverlap](https://github.com/piLeoni/deoverlap)
+
 The common case is pen-plotter work: two strokes closer than a pen width
 visually merge on paper, so only one of them should keep the ink. Unlike
 endpoint-only “deduplicate” tools, this library builds a **corridor** around
 each kept stroke and crops (or drops) later strokes that fall inside it.
 
-![Tangent circles and a line: the corridor mask (orange) around kept strokes (blue) crops the overlapping arcs (red)](docs/img/hero.png)
+![Tangent circles and a line: the corridor mask (orange) around kept strokes (blue) crops the overlapping arcs (red)](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/hero.png)
 
 In every figure, blue is kept, red is removed and the thin orange outline is
 the corridor mask. They are rendered by `examples/make_figures.py`.
@@ -47,7 +49,7 @@ When two corridors collide, priority is explicit:
 | `longest` | Prefer the stroke that covers more ground |
 | `shortest` | Prefer short marks / detail |
 
-![The same three strokes under keep=first, longest and shortest](docs/img/keep_policy.png)
+![The same three strokes under keep=first, longest and shortest](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/keep_policy.png)
 
 Original indices are preserved in `result.kept_parts` / `removed_parts` even
 when processing order changes.
@@ -58,7 +60,7 @@ when processing order changes.
 - `mode="drop"` — if more than `drop_fraction` (default 0.5) of a geometry’s
   length is covered, discard the whole thing instead of leaving stubs.
 
-![crop keeps the protruding stub, drop discards the mostly covered stroke](docs/img/crop_vs_drop.png)
+![crop keeps the protruding stub, drop discards the mostly covered stroke](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/crop_vs_drop.png)
 
 `min_length=` drops lineal fragments shorter than that threshold after clipping
 (points are never removed by it).
@@ -89,7 +91,7 @@ whatever direction its two ends point in.
 Raising it to 45° or 60° trims steeper merges too. Crossings steeper than the
 threshold are never cut.
 
-![Without parallel_only the crossings get punched; with it only the parallel duplicate is cropped](docs/img/parallel_only.png)
+![Without parallel_only the crossings get punched; with it only the parallel duplicate is cropped](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/parallel_only.png)
 
 ## Groups — split pieces stay one object
 
@@ -108,7 +110,7 @@ result.kept_parts[1]  # MultiLineString of both arcs
 Set `group=False` for a flat list of primitive pieces (origins still recorded
 in `kept_parts`).
 
-![A ring cut by a line: one grouped result versus separate arcs](docs/img/groups.png)
+![A ring cut by a line: one grouped result versus separate arcs](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/groups.png)
 
 This is the right model for layer-aware pipelines too: treat each input
 geometry as a group, run deoverlap per layer, and never let one layer’s
@@ -231,7 +233,7 @@ Cutting leaves fragments; almost every piece under 1 mm on this card is one.
 to 860 and the drawn length drops by 35%. For the more conservative default
 (`--parallel-angle 30`, crossings left alone), the same card loses about 21%.
 
-![The whole card: removed ink in red, the dashed box is the zoom below](docs/img/osm_map.png)
+![The whole card: removed ink in red, the dashed box is the zoom below](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_map.png)
 
 In the zoom, the ink panels are blended like real ink: every pass multiplies
 the colour, so the darker the blue, the more times the pen went over the same
@@ -239,7 +241,7 @@ spot. Before, the dark bands are doubled carriageways and the dark dots are
 junctions, where a round pen tip lands on ink that is already there. After,
 the ink is one even layer.
 
-![Zoom at pen width: before, what was removed, after](docs/img/osm_zoom.png)
+![Zoom at pen width: before, what was removed, after](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_zoom.png)
 
 To try another place (needs `pip install osmnx`):
 
@@ -271,7 +273,7 @@ its own corridor unit; opposite sides can suppress each other, while immediate
 neighbours on the same chain (`--segment-adjacency`, default 1) stay intact so
 joints are not nibbled.
 
-![A thin ribbon drawn as one polyline: untouched without segments, one side suppressed with segments](docs/img/segments.png)
+![A thin ribbon drawn as one polyline: untouched without segments, one side suppressed with segments](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/segments.png)
 
 ```bash
 vpype read map.svg deoverlap -t 0.15mm --keep longest --segments -l 1 write out.svg
