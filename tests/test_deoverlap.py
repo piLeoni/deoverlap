@@ -108,6 +108,35 @@ def test_group_keeps_split_ring_as_one_multipart():
     assert len(flat_result.kept) >= 2
 
 
+def test_cut_ring_joins_across_its_start_point():
+    """The arc through the ring's first/last vertex is one piece, not two."""
+    ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
+    cutter = LineString([(1, -1), (1, 3)])
+    grouped = deoverlap([cutter, ring], 0.15, group=True, keep=KeepPolicy.FIRST)
+    assert len(flatten_geometries(grouped.kept_parts[1])) == 2
+    flat = deoverlap([cutter, ring], 0.15, group=False, keep=KeepPolicy.FIRST)
+    assert len(flat.kept) == 3  # cutter + two arcs
+
+
+def test_segments_removes_fold_back_between_neighbours():
+    """A hairpin folds onto itself; neighbouring edges must still suppress."""
+    spike = LineString([(0, 0), (6, 0), (6.5, 0.4), (6, 0.08), (0, 0.08), (0, 0)])
+    result = deoverlap(
+        [spike], 0.1, segments=True, parallel_only=True, keep="first",
+        min_length=0.05, keep_duplicates=True,
+    )
+    kept = result.kept_parts[0]
+    back = LineString([(6.5, 0.4), (6, 0.08)])
+    assert kept.intersection(back.buffer(0.01)).length < 0.1
+
+
+def test_segments_keeps_ordinary_corners():
+    """A 90 degree corner between neighbours is not a fold-back."""
+    square = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
+    result = deoverlap([square], 0.3, segments=True, parallel_only=True)
+    assert result.kept_parts[0].length == pytest.approx(square.length, abs=0.05)
+
+
 def test_parallel_only_preserves_crossing():
     horizontal = LineString([(0, 0), (4, 0)])
     vertical = LineString([(2, -2), (2, 2)])

@@ -69,6 +69,7 @@ class _SegId:
     index: int
     count: int
     closed: bool
+    heading: float = 0.0  # direction of travel, radians
 
 
 @dataclass
@@ -189,6 +190,17 @@ def _seg_adjacent(a: _SegId, b: _SegId, window: int) -> bool:
     return False
 
 
+def _heading(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return math.atan2(b[1] - a[1], b[0] - a[0])
+
+
+def _folds_back(a: _SegId, b: _SegId, angle_tol_rad: float) -> bool:
+    """True if the chain doubles back: headings nearly opposite (a hairpin)."""
+    d = abs(a.heading - b.heading) % (2 * math.pi)
+    d = min(d, 2 * math.pi - d)
+    return d > math.pi - angle_tol_rad
+
+
 def _reassemble(parts: Sequence[BaseGeometry], original: BaseGeometry) -> BaseGeometry:
     clean = [p for p in parts if p is not None and not p.is_empty]
     if not clean:
@@ -200,6 +212,10 @@ def _reassemble(parts: Sequence[BaseGeometry], original: BaseGeometry) -> BaseGe
         and merged.equals(original.boundary)
     ):
         return original
+    if merged.geom_type == "MultiLineString":
+        # Rejoin pieces that meet end to end: the arc through a ring's start
+        # vertex, or consecutive edges in segments mode.
+        merged = line_merge(merged)
     return merged
 
 
@@ -285,7 +301,7 @@ def _explode_segments(
                         continue
                     segments.append(LineString([a, b]))
                     origins.append(origin)
-                    seg_ids.append(_SegId(chain, i, count, True))
+                    seg_ids.append(_SegId(chain, i, count, True, _heading(a, b)))
                     parent_lengths.append(parent_len)
             else:
                 count = len(coords) - 1
@@ -295,7 +311,7 @@ def _explode_segments(
                         continue
                     segments.append(LineString([a, b]))
                     origins.append(origin)
-                    seg_ids.append(_SegId(chain, i, count, False))
+                    seg_ids.append(_SegId(chain, i, count, False, _heading(a, b)))
                     parent_lengths.append(parent_len)
             chain += 1
 
@@ -407,6 +423,7 @@ class _MaskIndex:
                 seg_id is not None
                 and other_seg is not None
                 and _seg_adjacent(seg_id, other_seg, self.segment_adjacency)
+                and not _folds_back(seg_id, other_seg, angle_tol_rad)
             ):
                 continue
             if self.parallel_only and angle is not None:
