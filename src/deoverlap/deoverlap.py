@@ -5,13 +5,11 @@ buffered *mask*; later pieces are cropped (or dropped) where they fall inside
 that mask. That is the right model for pen plotters: strokes closer than a pen
 width visually merge, so only one of them should keep the ink.
 
-``segments=True`` (self-overlap) splits every path into edge segments first, so
-two sides of a thin road outline — one continuous LineString — can still
-suppress each other. Adjacent segments on the same chain are excluded so joints
-are not nibbled.
+``self_overlap=True`` splits every path into edges first, so the two sides of a
+thin road outline — one continuous LineString — can still suppress each other.
+Neighbouring edges are excluded so joints are not nibbled.
 
-Pieces that came from the same input stay grouped (``MultiLineString`` etc.)
-unless ``group=False``.
+Pieces that came from the same input stay grouped (``MultiLineString`` etc.).
 
 The engine itself is written in Rust (``deoverlap._core``); this module only
 converts between Shapely geometries and coordinates.
@@ -20,8 +18,7 @@ converts between Shapely geometries and coordinates.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Iterable, Iterator, List, Optional, Sequence, Union
+from typing import Iterable, List, Literal, Optional, Sequence, Union
 
 from shapely import get_coordinates
 from shapely.geometry import (
@@ -48,19 +45,7 @@ except ImportError:  # pragma: no cover
 
 GeomInput = Union[BaseGeometry, Iterable["GeomInput"]]
 FlatGeom = Union[LineString, Point]
-
-
-class KeepPolicy(str, Enum):
-    """Which geometry wins when two corridors collide."""
-
-    FIRST = "first"
-    LONGEST = "longest"
-    SHORTEST = "shortest"
-
-
-class ClipMode(str, Enum):
-    CROP = "crop"
-    DROP = "drop"
+Prefer = Literal["longest", "first", "shortest"]
 
 
 @dataclass
@@ -71,13 +56,6 @@ class DeoverlapResult:
     removed_parts: dict[int, BaseGeometry] = field(default_factory=dict)
     wholly_removed: List[int] = field(default_factory=list)
     mask: List[Polygon] = field(default_factory=list)
-
-    def __iter__(self) -> Iterator:
-        kept_map = {i: [g] for i, g in self.kept_parts.items()}
-        yield self.kept
-        yield kept_map
-        yield self.removed
-        yield self.mask
 
 
 # =============================================================================
@@ -165,36 +143,36 @@ def deoverlap(
     geometries: GeomInput,
     tolerance: float,
     *,
-    keep: Union[KeepPolicy, str] = KeepPolicy.FIRST,
-    mode: Union[ClipMode, str] = ClipMode.CROP,
+    prefer: Prefer = "longest",
+    angle: float = 30.0,
+    self_overlap: bool = False,
     min_length: float = 0.0,
-    drop_fraction: float = 0.5,
-    parallel_only: bool = False,
-    parallel_angle: float = 30.0,
-    segments: bool = False,
-    segment_adjacency: int = 1,
-    group: bool = True,
+    drop: Optional[float] = None,
     keep_duplicates: bool = False,
     progress_bar: bool = False,
     mask: Optional[Sequence[Polygon]] = None,
-    preserve_types: Optional[bool] = None,
 ) -> DeoverlapResult:
     """De-overlap geometries that fall within ``tolerance`` of each other.
 
     Args:
-        segments: If true, explode every path into edge segments and allow
-            self-overlap — opposite sides of a thin outline can suppress each
-            other. Adjacent segments on the same chain (within
-            ``segment_adjacency``) are never clipped against each other.
-        segment_adjacency: How many neighbouring segment indices on the same
-            chain are exempt from clipping (default 1 = immediate neighbours,
-            including wrap-around on closed rings).
+        tolerance: Corridor radius: strokes closer than this to a kept
+            stroke are cut.
+        prefer: Which stroke wins a collision: ``"longest"``, ``"first"``
+            (input order) or ``"shortest"``.
+        angle: Strokes overlap only where their local bearings differ by at
+            most this many degrees (0–90); 90 cuts crossings too.
+        self_overlap: Let a path overlap itself, e.g. the two sides of a thin
+            outline. Neighbouring edges never cut each other unless the path
+            folds back on itself.
+        min_length: Drop surviving pieces shorter than this.
+        drop: Discard a whole stroke when more than this fraction (0–1) of
+            its length would be cut; ``None`` always crops.
+        keep_duplicates: Collect the removed pieces in ``removed`` and
+            ``removed_parts``.
+        progress_bar: Show a tqdm progress bar.
+        mask: Corridors from a previous run (``result.mask``) that also cut
+            this one.
     """
-    if preserve_types is not None:
-        group = bool(preserve_types)
-
-    keep_policy = KeepPolicy(keep)
-    clip_mode = ClipMode(mode)
     geoms = _as_list(geometries)
 
     mask_polys: list[Polygon] = []
@@ -203,7 +181,7 @@ def deoverlap(
 
     bar = None
     if progress_bar and tqdm is not None:
-        desc = "De-overlapping segments" if segments else "De-overlapping"
+        desc = "De-overlapping edges" if self_overlap else "De-overlapping"
         bar = tqdm(desc=desc, total=len(geoms))
 
     def on_progress(done: int, total: int) -> None:
@@ -214,14 +192,11 @@ def deoverlap(
         kept, removed_parts, removed, wholly, mask_out = _core.deoverlap(
             [_to_coords(g) for g in geoms],
             tolerance,
-            keep=keep_policy.value,
-            mode=clip_mode.value,
+            prefer=prefer,
+            angle=angle,
+            self_overlap=self_overlap,
             min_length=min_length,
-            drop_fraction=drop_fraction,
-            parallel_only=parallel_only,
-            parallel_angle=parallel_angle,
-            segments=segments,
-            segment_adjacency=segment_adjacency,
+            drop=drop,
             keep_duplicates=keep_duplicates,
             mask=[
                 (get_coordinates(p.exterior).tolist(), [get_coordinates(r).tolist() for r in p.interiors])
@@ -239,10 +214,7 @@ def deoverlap(
     for i, parts in kept:
         grouped = _grouped(_from_coords(parts), geoms[i], snap)
         result.kept_parts[i] = grouped
-        if group:
-            result.kept.append(grouped)
-        else:
-            result.kept.extend(flatten_geometries(grouped))
+        result.kept.append(grouped)
 
     gone = set(wholly)
     for i, parts in enumerate(removed_parts):

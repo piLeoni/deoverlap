@@ -1,9 +1,9 @@
 //! Remove overlapping strokes from vector drawings.
 //!
-//! Rust port of the Python `deoverlap` engine, built on the `geo` crate.
-//! Geometries are processed in priority order; each kept stroke adds a
-//! corridor of radius `tolerance` to a mask, and every later stroke loses
-//! whatever falls inside a corridor.
+//! Built on the `geo` crate. Geometries are processed in priority order; each
+//! kept stroke adds a corridor of radius `tolerance` to a mask, and every
+//! later stroke loses whatever falls inside a corridor running within
+//! `angle` degrees of it.
 //!
 //! Polygons are not a separate input type: pass their rings as closed
 //! lines, grouped in one [`Geometry`].
@@ -22,24 +22,24 @@ use merge::line_merge;
 /// Clipped pieces are compared with a slack of `tolerance * SNAP_FRACTION`.
 const SNAP_FRACTION: f64 = 1e-6;
 
+/// In self-overlap mode, edges this many indices apart on the same path are
+/// neighbours and never clip each other, unless they fold back.
+const SEGMENT_ADJACENCY: i64 = 1;
+
+/// Neighbouring edges fold back (a hairpin) when their headings differ by
+/// more than 180° minus this.
+const FOLD_BACK_TOL_DEG: f64 = 30.0;
+
+/// Which geometry wins when two corridors collide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum KeepPolicy {
-    /// Earlier geometries win.
-    #[default]
-    First,
+pub enum Prefer {
     /// Longer geometries win.
+    #[default]
     Longest,
+    /// Earlier geometries win.
+    First,
     /// Shorter geometries win.
     Shortest,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ClipMode {
-    /// Keep the parts of a stroke that fall outside the mask.
-    #[default]
-    Crop,
-    /// Drop the whole stroke when too much of it would be cut.
-    Drop,
 }
 
 /// One part of a geometry: a polyline (closed if first == last) or a point.
@@ -56,23 +56,17 @@ pub type Geometry = Vec<Part>;
 pub struct Options {
     /// Corridor radius: strokes closer than this to a kept stroke are cut.
     pub tolerance: f64,
-    pub keep: KeepPolicy,
-    pub mode: ClipMode,
+    pub prefer: Prefer,
+    /// Strokes overlap only where their local bearings differ by at most this
+    /// many degrees; 90 or more cuts crossings too.
+    pub angle: f64,
+    /// Let a path overlap itself (e.g. the two sides of a thin outline).
+    pub self_overlap: bool,
     /// Drop surviving pieces shorter than this.
     pub min_length: f64,
-    /// In [`ClipMode::Drop`], drop a stroke when more than this fraction of
-    /// its length would be removed.
-    pub drop_fraction: f64,
-    /// Only cut where strokes run roughly parallel; crossings survive.
-    pub parallel_only: bool,
-    /// Max local bearing difference in degrees for `parallel_only`; also the
-    /// fold-back threshold in `segments` mode.
-    pub parallel_angle: f64,
-    /// Explode every path into edges so a stroke can overlap itself.
-    pub segments: bool,
-    /// Neighbouring edges on the same chain within this many indices are
-    /// exempt from clipping each other, unless they fold back.
-    pub segment_adjacency: i64,
+    /// Drop a whole stroke when more than this fraction of its length would
+    /// be cut; `None` always crops.
+    pub drop: Option<f64>,
     /// Collect the removed pieces in the result.
     pub keep_duplicates: bool,
     /// Corridors from a previous run that also clip this one.
@@ -83,14 +77,11 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             tolerance: 0.0,
-            keep: KeepPolicy::First,
-            mode: ClipMode::Crop,
+            prefer: Prefer::Longest,
+            angle: 30.0,
+            self_overlap: false,
             min_length: 0.0,
-            drop_fraction: 0.5,
-            parallel_only: false,
-            parallel_angle: 30.0,
-            segments: false,
-            segment_adjacency: 1,
+            drop: None,
             keep_duplicates: false,
             mask: Vec::new(),
         }
@@ -101,6 +92,16 @@ impl Options {
     pub fn new(tolerance: f64) -> Self {
         Self { tolerance, ..Self::default() }
     }
+
+    /// Whether bearings matter: below 90° some corridors are skipped.
+    fn by_bearing(&self) -> bool {
+        self.angle < 90.0
+    }
+
+    /// True if keeping `kept` out of `total` length counts as dropped.
+    fn drops(&self, kept: f64, total: f64) -> bool {
+        self.drop.is_some_and(|f| total > 0.0 && kept / total < 1.0 - f)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -108,7 +109,7 @@ pub struct DeoverlapResult {
     /// Surviving parts, aligned with the input (`None` = nothing kept).
     pub kept_parts: Vec<Option<Geometry>>,
     /// Indices of kept inputs in the order they were kept: priority order,
-    /// or input order in `segments` mode.
+    /// or input order in self-overlap mode.
     pub kept_order: Vec<usize>,
     /// Removed pieces per input, filled when `keep_duplicates` is set.
     pub removed_parts: Vec<Option<Geometry>>,
@@ -136,24 +137,25 @@ pub fn deoverlap(geoms: &[Geometry], opts: &Options) -> DeoverlapResult {
 }
 
 /// Like [`deoverlap`], calling `progress(done, total)` as work advances.
-/// `total` counts geometries, or exploded edges in `segments` mode.
+/// `total` counts geometries, or exploded edges in self-overlap mode.
 pub fn deoverlap_with_progress(
     geoms: &[Geometry],
     opts: &Options,
     progress: &mut dyn FnMut(usize, usize),
 ) -> DeoverlapResult {
-    let angle_tol_rad = opts.parallel_angle.to_radians();
-    if opts.segments {
-        return deoverlap_segments(geoms, opts, angle_tol_rad, progress);
+    let angle_tol_rad = opts.angle.to_radians();
+    if opts.self_overlap {
+        return deoverlap_self(geoms, opts, angle_tol_rad, progress);
     }
 
-    let mut index = MaskIndex::new(&opts.mask, opts.parallel_only, -1);
+    let by_bearing = opts.by_bearing();
+    let mut index = MaskIndex::new(&opts.mask, by_bearing, -1);
     let mut result = DeoverlapResult::with_len(geoms.len());
     let snap = opts.tolerance * SNAP_FRACTION;
     let want_removed = opts.keep_duplicates;
 
     let lengths: Vec<f64> = geoms.iter().map(|g| geom_length(g)).collect();
-    for (done, i) in priority_order(&lengths, opts.keep).into_iter().enumerate() {
+    for (done, i) in priority_order(&lengths, opts.prefer).into_iter().enumerate() {
         progress(done, geoms.len());
         let geom = &geoms[i];
         if geom.is_empty() {
@@ -163,7 +165,7 @@ pub fn deoverlap_with_progress(
         let mut kept_sub = Vec::new();
         let mut removed = Vec::new();
         for part in geom {
-            let c = if opts.parallel_only {
+            let c = if by_bearing {
                 clip_local(part, &index, angle_tol_rad, snap, want_removed)
             } else {
                 clip_one(part, &index, None, angle_tol_rad, None, want_removed)
@@ -179,10 +181,7 @@ pub fn deoverlap_with_progress(
             continue;
         }
 
-        if opts.mode == ClipMode::Drop
-            && lengths[i] > 0.0
-            && geom_length(&reassembled) / lengths[i] < 1.0 - opts.drop_fraction
-        {
+        if opts.drops(geom_length(&reassembled), lengths[i]) {
             result.remove_whole(i, geom, want_removed);
             continue;
         }
@@ -195,15 +194,14 @@ pub fn deoverlap_with_progress(
 
         for part in &reassembled {
             match part {
-                Part::Line(ls) if opts.parallel_only => {
+                Part::Line(ls) if by_bearing => {
                     for (a, b) in edges(ls) {
                         let edge = LineString::new(vec![a, b]);
                         index.add(edge.buffer(opts.tolerance), Some(edge_angle(a, b)), None);
                     }
                 }
                 Part::Line(ls) => index.add(ls.buffer(opts.tolerance), None, None),
-                Part::Point(p) if !opts.parallel_only => index.add(p.buffer(opts.tolerance), None, None),
-                Part::Point(_) => {}
+                Part::Point(p) => index.add(p.buffer(opts.tolerance), None, None),
             }
         }
         result.kept_parts[i] = Some(reassembled);
@@ -226,13 +224,14 @@ impl DeoverlapResult {
 }
 
 /// Self-overlap path: work on exploded edges, then regroup by origin.
-fn deoverlap_segments(
+fn deoverlap_self(
     geoms: &[Geometry],
     opts: &Options,
     angle_tol_rad: f64,
     progress: &mut dyn FnMut(usize, usize),
 ) -> DeoverlapResult {
-    let mut index = MaskIndex::new(&opts.mask, opts.parallel_only, opts.segment_adjacency);
+    let by_bearing = opts.by_bearing();
+    let mut index = MaskIndex::new(&opts.mask, by_bearing, SEGMENT_ADJACENCY);
     let mut result = DeoverlapResult::with_len(geoms.len());
     let snap = opts.tolerance * SNAP_FRACTION;
     let want_removed = opts.keep_duplicates;
@@ -251,16 +250,14 @@ fn deoverlap_segments(
     }
 
     let parent_lengths: Vec<f64> = segs.iter().map(|s| s.parent_length).collect();
-    for (done, si) in priority_order(&parent_lengths, opts.keep).into_iter().enumerate() {
+    for (done, si) in priority_order(&parent_lengths, opts.prefer).into_iter().enumerate() {
         progress(done, segs.len());
         let s = &segs[si];
         let whole = Part::Line(LineString::new(vec![s.a, s.b]));
-        let angle = opts.parallel_only.then(|| edge_angle(s.a, s.b));
+        let angle = by_bearing.then(|| edge_angle(s.a, s.b));
 
         let c = clip_one(&whole, &index, angle, angle_tol_rad, Some(&s.id), want_removed);
-        let seg_len = dist(s.a, s.b);
-        let dropped = c.kept.is_empty()
-            || (opts.mode == ClipMode::Drop && parts_length(&c.kept) / seg_len < 1.0 - opts.drop_fraction);
+        let dropped = c.kept.is_empty() || opts.drops(parts_length(&c.kept), dist(s.a, s.b));
         let (kept, stubs) = if dropped { (Vec::new(), Vec::new()) } else { filter_min_length(c.kept, opts.min_length) };
         if kept.is_empty() {
             if want_removed {
@@ -343,10 +340,10 @@ impl SegId {
     }
 
     /// True if the chain doubles back: headings nearly opposite (a hairpin).
-    fn folds_back(&self, other: &SegId, angle_tol_rad: f64) -> bool {
+    fn folds_back(&self, other: &SegId) -> bool {
         let d = (self.heading - other.heading).abs() % (2.0 * PI);
         let d = d.min(2.0 * PI - d);
-        d > PI - angle_tol_rad
+        d > PI - FOLD_BACK_TOL_DEG.to_radians()
     }
 }
 
@@ -482,7 +479,7 @@ fn clip_local(part: &Part, mask: &MaskIndex, angle_tol_rad: f64, snap: f64, want
 // ---------------------------------------------------------------------------
 
 /// Rejoin pieces that meet end to end: the arc through a ring's start vertex,
-/// or consecutive edges in segments mode.
+/// or consecutive edges in self-overlap mode.
 fn reassemble(parts: Vec<Part>, snap: f64) -> Vec<Part> {
     let mut lines = Vec::new();
     let mut points = Vec::new();
@@ -509,12 +506,12 @@ fn filter_min_length(parts: Vec<Part>, min_length: f64) -> (Vec<Part>, Vec<Part>
     })
 }
 
-fn priority_order(scores: &[f64], keep: KeepPolicy) -> Vec<usize> {
+fn priority_order(scores: &[f64], prefer: Prefer) -> Vec<usize> {
     let mut idxs: Vec<usize> = (0..scores.len()).collect();
-    match keep {
-        KeepPolicy::First => {}
-        KeepPolicy::Longest => idxs.sort_by(|&a, &b| scores[b].total_cmp(&scores[a])),
-        KeepPolicy::Shortest => idxs.sort_by(|&a, &b| scores[a].total_cmp(&scores[b])),
+    match prefer {
+        Prefer::First => {}
+        Prefer::Longest => idxs.sort_by(|&a, &b| scores[b].total_cmp(&scores[a])),
+        Prefer::Shortest => idxs.sort_by(|&a, &b| scores[a].total_cmp(&scores[b])),
     }
     idxs
 }

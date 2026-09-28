@@ -1,4 +1,4 @@
-"""Unit tests for deoverlap 3.x — behaviour, not screenshots.
+"""Unit tests for deoverlap 4.x — behaviour, not screenshots.
 
 README figures are rendered separately by ``examples/make_figures.py`` so a
 normal pytest run stays fast and dependency-light.
@@ -6,21 +6,23 @@ normal pytest run stays fast and dependency-light.
 
 from __future__ import annotations
 
-import pytest
-from shapely.geometry import LineString, MultiLineString, Point, Polygon
+import math
 
-from deoverlap import (
-    ClipMode,
-    DeoverlapResult,
-    KeepPolicy,
-    deoverlap,
-    flatten_geometries,
-)
+import pytest
+from shapely.geometry import LineString, MultiLineString, Point
+
+from deoverlap import DeoverlapResult, deoverlap, flatten_geometries
+
+
+def plain(geoms, tolerance, **kwargs):
+    """Earlier strokes win and bearings are ignored, unless a test says otherwise."""
+    kwargs = {"prefer": "first", "angle": 90, **kwargs}
+    return deoverlap(geoms, tolerance, **kwargs)
 
 
 def test_simple_line_overlap_crops_second():
     geoms = [LineString([(0, 0), (2, 0)]), LineString([(1, 0.05), (3, 0.05)])]
-    result = deoverlap(geoms, 0.1, keep_duplicates=True)
+    result = plain(geoms, 0.1, keep_duplicates=True)
     assert isinstance(result, DeoverlapResult)
     assert len(result.kept) == 2
     assert result.kept[0].equals(geoms[0])
@@ -28,136 +30,98 @@ def test_simple_line_overlap_crops_second():
     assert len(result.removed) > 0
 
 
-def test_segments_self_overlap_thins_a_narrow_ribbon():
-    """Opposite sides of one thin outline suppress each other (self-overlap).
+def test_self_overlap_thins_a_narrow_ribbon():
+    """Opposite sides of one thin outline suppress each other.
 
-    A long thin rectangle boundary is a *single* LineString; without segments
-    mode deoverlap cannot touch it. With segments=True the two long sides are
-    separate edges and the later one is cropped/dropped.
+    A long thin rectangle boundary is a *single* LineString; without
+    self_overlap deoverlap cannot touch it.
     """
-    # 0.08 wide ribbon — sides are 0.08 apart.
-    ring = LineString(
-        [(0, 0), (10, 0), (10, 0.08), (0, 0.08), (0, 0)]
-    )
-    plain = deoverlap([ring], 0.1, parallel_only=True)
-    assert 0 in plain.kept_parts
-    # Full perimeter roughly 2*10 + 2*0.08
-    assert plain.kept_parts[0].length == pytest.approx(ring.length, rel=0.05)
+    ring = LineString([(0, 0), (10, 0), (10, 0.08), (0, 0.08), (0, 0)])
+    untouched = plain([ring], 0.1, angle=30)
+    assert untouched.kept_parts[0].length == pytest.approx(ring.length, rel=0.05)
 
-    selfed = deoverlap(
-        [ring],
-        0.1,
-        segments=True,
-        parallel_only=True,
-        keep=KeepPolicy.FIRST,
-        min_length=0.05,
-    )
-    assert 0 in selfed.kept_parts
-    # One long side (~10) should dominate; the opposite side is suppressed.
-    assert selfed.kept_parts[0].length < ring.length * 0.7
+    thinned = plain([ring], 0.1, angle=30, self_overlap=True, min_length=0.05)
+    assert thinned.kept_parts[0].length < ring.length * 0.7
 
 
-def test_segment_adjacency_preserves_joints():
-    """Immediate neighbours on a chain are not clipped against each other."""
-    # Open polyline with a sharp corner — adjacent edges share a vertex and
-    # their buffers overlap, but both must survive.
+def test_self_overlap_preserves_joints():
+    """Neighbouring edges of a path are not cut against each other."""
     elbow = LineString([(0, 0), (2, 0), (2, 2)])
-    result = deoverlap([elbow], 0.3, segments=True, parallel_only=False)
-    assert 0 in result.kept_parts
+    result = plain([elbow], 0.3, self_overlap=True)
     assert result.kept_parts[0].length == pytest.approx(elbow.length, abs=0.05)
+
+
+def test_self_overlap_removes_fold_back_between_neighbours():
+    """A hairpin folds onto itself; neighbouring edges must still suppress."""
+    spike = LineString([(0, 0), (6, 0), (6.5, 0.4), (6, 0.08), (0, 0.08), (0, 0)])
+    result = plain([spike], 0.1, angle=30, self_overlap=True, min_length=0.05)
+    back = LineString([(6.5, 0.4), (6, 0.08)])
+    assert result.kept_parts[0].intersection(back.buffer(0.01)).length < 0.1
+
+
+def test_self_overlap_keeps_ordinary_corners():
+    """A 90 degree corner between neighbours is not a fold-back."""
+    square = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
+    for angle in (30, 90):
+        result = plain([square], 0.3, angle=angle, self_overlap=True)
+        assert result.kept_parts[0].length == pytest.approx(square.length, abs=0.05)
 
 
 def test_fully_engulfed_line_is_removed():
     geoms = [LineString([(0, 0), (3, 0)]), LineString([(1, 0), (2, 0)])]
-    result = deoverlap(geoms, 0.2, keep_duplicates=True)
+    result = plain(geoms, 0.2, keep_duplicates=True)
     assert len(result.kept) == 1
     assert result.wholly_removed == [1]
     assert 1 in result.removed_parts
 
 
-def test_longest_keep_policy_prefers_longer_stroke():
+def test_prefer_longest_keeps_the_longer_stroke():
     short = LineString([(0, 0), (1, 0)])
     long = LineString([(0.05, 0), (3, 0)])  # nearly on top of short
-    # Input order would keep short first and carve long. LONGEST reverses that.
-    result = deoverlap([short, long], 0.1, keep=KeepPolicy.LONGEST)
-    assert len(result.kept) == 1 or (
-        len(result.kept) == 2 and result.kept_parts[1].length > result.kept_parts.get(0, LineString()).length
-    )
-    # The long stroke (index 1) must survive in full or nearly so.
-    assert 1 in result.kept_parts
+    result = deoverlap([short, long], 0.1)  # longest is the default
     assert result.kept_parts[1].length == pytest.approx(long.length, rel=0.05)
-    # The short one is wholly removed or reduced to nothing meaningful.
-    assert 0 in result.wholly_removed or 0 not in result.kept_parts
+    assert 0 not in result.kept_parts
+
+    first = deoverlap([short, long], 0.1, prefer="first")
+    assert first.kept_parts[0].equals(short)
 
 
-def test_group_keeps_split_ring_as_one_multipart():
-    """A closed ring cut by a corridor stays one grouped geometry."""
+def test_unknown_prefer_is_rejected():
+    with pytest.raises(ValueError, match="prefer"):
+        deoverlap([LineString([(0, 0), (1, 0)])], 0.1, prefer="biggest")
+
+
+def test_split_ring_stays_one_geometry():
+    """A closed ring cut by a corridor stays one entry in ``kept``."""
     ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
     cutter = LineString([(1, -1), (1, 3)])  # crosses the ring twice
-    result = deoverlap([cutter, ring], 0.15, group=True, keep=KeepPolicy.FIRST)
-    assert 1 in result.kept_parts
-    grouped = result.kept_parts[1]
-    # Cropped ring should be multipart (two arcs) but a single result entry.
-    assert isinstance(grouped, (LineString, MultiLineString))
-    assert sum(1 for g in result.kept if g is grouped) == 1
-    flat = flatten_geometries(grouped)
-    assert len(flat) >= 2  # at least two arcs
-
-    flat_result = deoverlap([cutter, ring], 0.15, group=False, keep=KeepPolicy.FIRST)
-    # Ungrouped: each arc is its own entry in kept.
-    assert len(flat_result.kept) >= 2
+    result = plain([cutter, ring], 0.15)
+    assert len(result.kept) == 2
+    assert isinstance(result.kept_parts[1], MultiLineString)
 
 
 def test_cut_ring_joins_across_its_start_point():
     """The arc through the ring's first/last vertex is one piece, not two."""
     ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
     cutter = LineString([(1, -1), (1, 3)])
-    grouped = deoverlap([cutter, ring], 0.15, group=True, keep=KeepPolicy.FIRST)
-    assert len(flatten_geometries(grouped.kept_parts[1])) == 2
-    flat = deoverlap([cutter, ring], 0.15, group=False, keep=KeepPolicy.FIRST)
-    assert len(flat.kept) == 3  # cutter + two arcs
+    result = plain([cutter, ring], 0.15)
+    assert len(flatten_geometries(result.kept_parts[1])) == 2
 
 
-def test_segments_removes_fold_back_between_neighbours():
-    """A hairpin folds onto itself; neighbouring edges must still suppress."""
-    spike = LineString([(0, 0), (6, 0), (6.5, 0.4), (6, 0.08), (0, 0.08), (0, 0)])
-    result = deoverlap(
-        [spike], 0.1, segments=True, parallel_only=True, keep="first",
-        min_length=0.05, keep_duplicates=True,
-    )
-    kept = result.kept_parts[0]
-    back = LineString([(6.5, 0.4), (6, 0.08)])
-    assert kept.intersection(back.buffer(0.01)).length < 0.1
-
-
-def test_segments_keeps_ordinary_corners():
-    """A 90 degree corner between neighbours is not a fold-back."""
-    square = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
-    result = deoverlap([square], 0.3, segments=True, parallel_only=True)
-    assert result.kept_parts[0].length == pytest.approx(square.length, abs=0.05)
-
-
-def test_parallel_only_preserves_crossing():
+def test_narrow_angle_preserves_crossing():
     horizontal = LineString([(0, 0), (4, 0)])
     vertical = LineString([(2, -2), (2, 2)])
-    # Without parallel_only the vertical line loses a chunk at the cross.
-    cropped = deoverlap([horizontal, vertical], 0.3, parallel_only=False)
-    crossing = deoverlap(
-        [horizontal, vertical],
-        0.3,
-        parallel_only=True,
-        parallel_angle=30,
-    )
-    assert 1 in cropped.kept_parts and 1 in crossing.kept_parts
+    cropped = plain([horizontal, vertical], 0.3)
+    crossing = plain([horizontal, vertical], 0.3, angle=30)
     assert crossing.kept_parts[1].length > cropped.kept_parts[1].length
     assert crossing.kept_parts[1].length == pytest.approx(vertical.length, abs=0.05)
 
 
-def test_parallel_only_uses_local_bearing():
+def test_angle_uses_local_bearing():
     """A U whose chord is horizontal still has a vertical arm beside the line."""
     wall = LineString([(0, 0), (0, 10)])
     u_turn = LineString([(0.05, 9), (0.05, 1), (3, 1), (3, 9)])
-    result = deoverlap([wall, u_turn], 0.1, parallel_only=True, keep="first")
+    result = plain([wall, u_turn], 0.1, angle=30)
     kept = result.kept_parts[1]
     # The left arm (8 long) is inside the wall's corridor and runs parallel.
     assert kept.length == pytest.approx(u_turn.length - 8, abs=0.3)
@@ -165,43 +129,48 @@ def test_parallel_only_uses_local_bearing():
     assert kept.geom_type == "LineString"
 
 
+def test_invalid_angle_is_rejected():
+    with pytest.raises(ValueError, match="angle"):
+        deoverlap([LineString([(0, 0), (1, 0)])], 0.1, angle=120)
+
+
 def test_min_length_drops_stubs():
     a = LineString([(0, 0), (2, 0)])
     # Runs almost on top of a, but sticks out by 0.05 on the right.
     b = LineString([(0.5, 0.02), (2.05, 0.02)])
-    result = deoverlap([a, b], 0.1, min_length=0.1, keep_duplicates=True)
-    # The leftover stub (~0.05) should be discarded.
+    result = plain([a, b], 0.1, min_length=0.1)
     if 1 in result.kept_parts:
         assert result.kept_parts[1].length >= 0.1
     else:
         assert 1 in result.wholly_removed
 
 
-def test_drop_mode_discards_mostly_covered_line():
+def test_drop_discards_mostly_covered_line():
     a = LineString([(0, 0), (3, 0)])
     # Mostly inside a's corridor, but sticks out past the end so crop keeps a stub.
     b = LineString([(0.5, 0.02), (3.5, 0.02)])
-    cropped = deoverlap([a, b], 0.1, mode=ClipMode.CROP)
-    dropped = deoverlap([a, b], 0.1, mode=ClipMode.DROP, drop_fraction=0.5)
-    assert 1 in cropped.kept_parts  # crop keeps the protruding stub
+    cropped = plain([a, b], 0.1)
+    dropped = plain([a, b], 0.1, drop=0.5)
     assert cropped.kept_parts[1].length < b.length
     assert 1 in dropped.wholly_removed
 
 
+def test_invalid_drop_is_rejected():
+    with pytest.raises(ValueError, match="drop"):
+        deoverlap([LineString([(0, 0), (1, 0)])], 0.1, drop=1.5)
+
+
 def test_mask_carries_across_stages():
-    batch1 = [LineString([(0, 0), (2, 0)])]
-    r1 = deoverlap(batch1, 0.1)
+    r1 = plain([LineString([(0, 0), (2, 0)])], 0.1)
     batch2 = [LineString([(1, 0.05), (3, 0.05)])]
-    r2 = deoverlap(batch2, 0.1, mask=r1.mask, keep_duplicates=True)
+    r2 = plain(batch2, 0.1, mask=r1.mask, keep_duplicates=True)
     assert r2.kept[0].length < batch2[0].length
     assert len(r2.removed) > 0
 
 
-@pytest.mark.parametrize("segments", [False, True])
-def test_kept_plus_removed_conserves_length(segments):
+@pytest.mark.parametrize("self_overlap", [False, True])
+def test_kept_plus_removed_conserves_length(self_overlap):
     """Removed pieces must not double-count ink that was actually kept."""
-    import math
-
     geoms = []
     for k in range(12):
         a = k * 0.37
@@ -210,10 +179,7 @@ def test_kept_plus_removed_conserves_length(segments):
             for t in range(9)
         ]
         geoms.append(LineString(pts))
-    result = deoverlap(
-        geoms, 0.1, keep="longest", parallel_only=True, segments=segments,
-        keep_duplicates=True,
-    )
+    result = deoverlap(geoms, 0.1, self_overlap=self_overlap, keep_duplicates=True)
     total_in = sum(g.length for g in geoms)
     kept = sum(g.length for g in result.kept)
     removed = sum(g.length for g in result.removed)
@@ -221,20 +187,21 @@ def test_kept_plus_removed_conserves_length(segments):
     assert kept + removed == pytest.approx(total_in, rel=1e-4)
 
 
-@pytest.mark.parametrize("segments", [False, True])
-def test_progress_reaches_the_total(segments):
+@pytest.mark.parametrize("self_overlap", [False, True])
+def test_progress_reaches_the_total(self_overlap):
     from deoverlap import _core
 
     calls = []
-    geoms = [[[[0.0, 0.1 * k], [5.0, 0.1 * k]]] for k in range(300)]
-    _core.deoverlap(geoms, 0.1, segments=segments, progress=lambda d, t: calls.append((d, t)))
+    coords = [[[[0.0, 0.1 * k], [5.0, 0.1 * k]]] for k in range(300)]
+    _core.deoverlap(coords, 0.1, self_overlap=self_overlap, progress=lambda d, t: calls.append((d, t)))
     assert calls[-1] == (300, 300)
     assert len(calls) <= 102
     assert [d for d, _ in calls] == sorted(d for d, _ in calls)
 
-    plain = deoverlap([LineString(g[0]) for g in geoms], 0.1, segments=segments)
-    with_bar = deoverlap([LineString(g[0]) for g in geoms], 0.1, segments=segments, progress_bar=True)
-    assert [g.wkt for g in with_bar.kept] == [g.wkt for g in plain.kept]
+    geoms = [LineString(c[0]) for c in coords]
+    silent = deoverlap(geoms, 0.1, self_overlap=self_overlap)
+    with_bar = deoverlap(geoms, 0.1, self_overlap=self_overlap, progress_bar=True)
+    assert [g.wkt for g in with_bar.kept] == [g.wkt for g in silent.kept]
 
 
 def test_progress_callback_errors_propagate():
@@ -254,18 +221,8 @@ def test_empty_input():
     assert result.wholly_removed == []
 
 
-def test_legacy_tuple_unpack():
-    geoms = [LineString([(0, 0), (2, 0)]), LineString([(1, 0), (3, 0)])]
-    kept, kept_map, removed, mask = deoverlap(geoms, 0.1, keep_duplicates=True)
-    assert len(kept) >= 1
-    assert isinstance(kept_map, dict)
-    assert isinstance(mask, list)
-
-
 def test_polygon_ring_preserved_when_untouched():
     poly = Point(0, 0).buffer(1.0)
     line = LineString([(5, 0), (6, 0)])  # far away
-    result = deoverlap([poly, line], 0.1, group=True)
-    assert 0 in result.kept_parts
+    result = deoverlap([poly, line], 0.1)
     assert result.kept_parts[0].geom_type == "Polygon"
-

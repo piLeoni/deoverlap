@@ -1,6 +1,6 @@
 [package]
 name = "deoverlap-core"
-version = "0.1.0"
+version = "4.0.0"
 edition = "2021"
 description = "Remove overlapping strokes from vector drawings (Rust core of deoverlap)"
 license = "MIT"

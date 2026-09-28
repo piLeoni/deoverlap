@@ -26,7 +26,7 @@ def test_plugin_crops_near_parallel_lines():
     lc.append(_line(1, 0.05, 11, 0.05))  # 0.05 mm away, parallel
     doc.add(lc, 1)
 
-    result = vpype_cli.execute("deoverlap -t 0.1mm --keep longest", document=doc)
+    result = vpype_cli.execute("deoverlap -t 0.1mm --prefer longest", document=doc)
     layer = result.layers[1]
     # Longest wins; the short offset line should be gone or heavily cropped.
     total = sum(float(np.sum(np.abs(np.diff(line)))) for line in layer)
@@ -39,9 +39,23 @@ def test_plugin_progress_flag(capsys):
     doc = vpype.Document()
     doc.add(vpype.LineCollection([_line(0, 0, 10, 0), _line(1, 0.05, 11, 0.05)]), 1)
 
-    result = vpype_cli.execute("deoverlap -t 0.1mm --progress", document=doc)
+    result = vpype_cli.execute("deoverlap -t 0.1mm --progress-bar", document=doc)
     assert len(result.layers[1]) >= 1
     assert "De-overlapping" in capsys.readouterr().err
+
+
+def test_plugin_v4_options():
+    doc = vpype.Document()
+    doc.add(vpype.LineCollection([_line(0, 0, 4, 0), _line(2, -2, 2, 2), _line(0, 0.05, 3.5, 0.05)]), 1)
+
+    crossing_kept = vpype_cli.execute("deoverlap -t 0.3mm --prefer first --angle 30", document=doc)
+    crossing_cut = vpype_cli.execute("deoverlap -t 0.3mm --prefer first --angle 90", document=doc)
+    assert len(crossing_cut.layers[1]) > len(crossing_kept.layers[1])
+
+    dropped = vpype_cli.execute(
+        "deoverlap -t 0.3mm --prefer first --drop 0.5 -m 0.1mm --self-overlap -k", document=doc
+    )
+    assert len(dropped.layers) == 2  # removed pieces on their own layer
 
 
 def test_plugin_respects_layer_flag():

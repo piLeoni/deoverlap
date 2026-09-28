@@ -1,14 +1,13 @@
 """vpype plugin: proximity-aware de-overlap for plotter paths.
 
 Replaces coarse endpoint-only ``deduplicate``. Each kept stroke owns a
-corridor of width ``tolerance``; later strokes are cropped or dropped where
-they fall inside that corridor. Layers are processed independently unless you
-pass the same document-level mask yourself (this command does not).
+corridor of radius ``tolerance``; later strokes are cropped or dropped where
+they fall inside that corridor. Layers are processed independently.
 """
 
 from __future__ import annotations
 
-from typing import List, Union
+from typing import List, Optional, Union
 
 import click
 import numpy as np
@@ -16,7 +15,7 @@ import vpype as vp
 import vpype_cli
 from shapely.geometry import LineString
 
-from deoverlap.deoverlap import ClipMode, KeepPolicy, deoverlap, flatten_geometries
+from deoverlap.deoverlap import deoverlap, flatten_geometries
 
 
 def _lines_from_layer(lines: vp.LineCollection) -> list[LineString]:
@@ -46,101 +45,81 @@ def _layer_from_geoms(geoms) -> vp.LineCollection:
     "--tolerance",
     type=vpype_cli.LengthType(),
     default="0.1mm",
-    help="Corridor half-width; strokes closer than this are treated as one ink "
-    "(default: 0.1mm ≈ one pen width).",
+    help="Corridor radius: strokes closer than this to a kept stroke are cut, "
+    "usually the pen width (default: 0.1mm).",
 )
 @click.option(
-    "--keep",
-    type=click.Choice([p.value for p in KeepPolicy], case_sensitive=False),
-    default=KeepPolicy.LONGEST.value,
-    help="Which stroke wins on collision (default: longest).",
+    "--prefer",
+    type=click.Choice(["longest", "first", "shortest"], case_sensitive=False),
+    default="longest",
+    help="Which stroke wins a collision; first = input order (default: longest).",
 )
 @click.option(
-    "--mode",
-    type=click.Choice([m.value for m in ClipMode], case_sensitive=False),
-    default=ClipMode.CROP.value,
-    help="crop = subtract overlap; drop = discard mostly-covered strokes.",
+    "--angle",
+    type=click.FloatRange(0, 90),
+    default=30.0,
+    help="Strokes overlap only where their directions differ by at most this "
+    "many degrees; 90 cuts crossings too (default: 30).",
 )
 @click.option(
+    "--self-overlap",
+    is_flag=True,
+    default=False,
+    help="Let a path overlap itself, e.g. the two sides of a thin outline.",
+)
+@click.option(
+    "-m",
     "--min-length",
     type=vpype_cli.LengthType(),
-    default="0.0mm",
-    help="Drop lineal fragments shorter than this after clipping.",
+    default="0mm",
+    help="Drop pieces shorter than this after cutting (default: 0mm).",
 )
 @click.option(
-    "--drop-fraction",
-    type=float,
-    default=0.5,
-    help="In drop mode, discard a stroke once this fraction of its length is covered.",
-)
-@click.option(
-    "--parallel-only/--no-parallel-only",
-    default=True,
-    help="Only clip against roughly parallel corridors (keep crossings). Default: on.",
-)
-@click.option(
-    "--parallel-angle",
-    type=float,
-    default=30.0,
-    help="Max local bearing difference in degrees for --parallel-only; raise it "
-    "to also trim steeper merges (default: 30).",
-)
-@click.option(
-    "--segments/--no-segments",
-    default=False,
-    help="Explode paths into edge segments so a thin outline can self-overlap "
-    "(opposite sides of one LineString). Default: off.",
-)
-@click.option(
-    "--segment-adjacency",
-    type=int,
-    default=1,
-    help="With --segments, neighbouring segment indices on the same chain are "
-    "exempt from clipping (default: 1).",
+    "--drop",
+    type=click.FloatRange(0, 1),
+    default=None,
+    help="Discard a whole stroke when more than this fraction of it would be "
+    "cut (default: always crop).",
 )
 @click.option(
     "-k",
     "--keep-duplicates",
     is_flag=True,
     default=False,
-    help="Store removed pieces on a new layer.",
+    help="Keep removed pieces in a separate layer.",
 )
 @click.option(
     "-p",
-    "--progress",
+    "--progress-bar",
     is_flag=True,
     default=False,
-    help="Show a progress bar.",
+    help="Display a progress bar.",
 )
 @click.option(
     "-l",
     "--layer",
     type=vpype_cli.LayerType(accept_multiple=True),
     default="all",
-    help="Target layer(s) (default: all).",
+    help="Target layer(s) (default: 'all').",
 )
 @vpype_cli.global_processor
 def deoverlap_cmd(
     document: vp.Document,
     tolerance: float,
-    keep: str,
-    mode: str,
+    prefer: str,
+    angle: float,
+    self_overlap: bool,
     min_length: float,
-    drop_fraction: float,
-    parallel_only: bool,
-    parallel_angle: float,
-    segments: bool,
-    segment_adjacency: int,
+    drop: Optional[float],
     keep_duplicates: bool,
-    progress: bool,
+    progress_bar: bool,
     layer: Union[int, List[int]],
 ) -> vp.Document:
-    """Remove near-coincident strokes using corridor de-overlap.
+    """Remove strokes that run on top of each other.
 
-    Unlike endpoint-only deduplicate, this removes (or crops) paths that run
-    within TOLERANCE of an earlier kept path — the case that bleeds on a
-    plotter. With --segments, opposite sides of a single thin outline can
-    suppress each other. Layers are handled one at a time.
+    Unlike endpoint-only deduplicate, this cuts (or drops) paths that run
+    within TOLERANCE of a kept path — the case that bleeds on a plotter.
+    Layers are handled one at a time.
     """
     layer_ids = vpype_cli.multiple_to_layer_ids(layer, document)
     new_document = document.empty_copy()
@@ -155,17 +134,13 @@ def deoverlap_cmd(
         result = deoverlap(
             geoms,
             tolerance,
-            keep=keep,
-            mode=mode,
+            prefer=prefer.lower(),
+            angle=angle,
+            self_overlap=self_overlap,
             min_length=min_length,
-            drop_fraction=drop_fraction,
-            parallel_only=parallel_only,
-            parallel_angle=parallel_angle,
-            segments=segments,
-            segment_adjacency=segment_adjacency,
-            group=True,
+            drop=drop,
             keep_duplicates=keep_duplicates,
-            progress_bar=progress,
+            progress_bar=progress_bar,
         )
         new_document.add(_layer_from_geoms(result.kept), layer_id=lid)
 

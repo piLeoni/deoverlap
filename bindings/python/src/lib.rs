@@ -4,7 +4,7 @@
 //! of parts, a part is a list of `[x, y]`, and a single-coordinate part is a
 //! point. The Shapely conversion lives on the Python side.
 
-use deoverlap_core::{ClipMode, KeepPolicy, Options, Part};
+use deoverlap_core::{Options, Part, Prefer};
 use geo::{LineString, Point, Polygon};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -54,39 +54,39 @@ fn from_ring(ring: &LineString<f64>) -> Coords {
 /// `progress(done, total)` about a hundred times per run.
 #[pyfunction]
 #[pyo3(signature = (
-    geometries, tolerance, *, keep = "first", mode = "crop", min_length = 0.0,
-    drop_fraction = 0.5, parallel_only = false, parallel_angle = 30.0,
-    segments = false, segment_adjacency = 1, keep_duplicates = false, mask = Vec::new(),
-    progress = None,
+    geometries, tolerance, *, prefer = "longest", angle = 30.0, self_overlap = false,
+    min_length = 0.0, drop = None, keep_duplicates = false, mask = Vec::new(), progress = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn deoverlap(
     py: Python<'_>,
     geometries: Vec<PyGeometry>,
     tolerance: f64,
-    keep: &str,
-    mode: &str,
+    prefer: &str,
+    angle: f64,
+    self_overlap: bool,
     min_length: f64,
-    drop_fraction: f64,
-    parallel_only: bool,
-    parallel_angle: f64,
-    segments: bool,
-    segment_adjacency: i64,
+    drop: Option<f64>,
     keep_duplicates: bool,
     mask: Vec<PyPolygon>,
     progress: Option<Py<PyAny>>,
 ) -> PyResult<Output> {
-    let keep = match keep {
-        "first" => KeepPolicy::First,
-        "longest" => KeepPolicy::Longest,
-        "shortest" => KeepPolicy::Shortest,
-        other => return Err(PyValueError::new_err(format!("unknown keep policy: {other:?}"))),
+    let prefer = match prefer {
+        "longest" => Prefer::Longest,
+        "first" => Prefer::First,
+        "shortest" => Prefer::Shortest,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "prefer must be 'longest', 'first' or 'shortest', not {other:?}"
+            )))
+        }
     };
-    let mode = match mode {
-        "crop" => ClipMode::Crop,
-        "drop" => ClipMode::Drop,
-        other => return Err(PyValueError::new_err(format!("unknown clip mode: {other:?}"))),
-    };
+    if !(0.0..=90.0).contains(&angle) {
+        return Err(PyValueError::new_err(format!("angle must be between 0 and 90 degrees, not {angle}")));
+    }
+    if let Some(f) = drop.filter(|f| !(0.0..=1.0).contains(f)) {
+        return Err(PyValueError::new_err(format!("drop must be between 0 and 1, not {f}")));
+    }
     let geoms: Vec<Vec<Part>> = geometries
         .iter()
         .map(|g| g.iter().filter_map(to_part).collect())
@@ -95,19 +95,7 @@ fn deoverlap(
         .iter()
         .map(|(ext, ints)| Polygon::new(to_ring(ext), ints.iter().map(to_ring).collect()))
         .collect();
-    let opts = Options {
-        tolerance,
-        keep,
-        mode,
-        min_length,
-        drop_fraction,
-        parallel_only,
-        parallel_angle,
-        segments,
-        segment_adjacency,
-        keep_duplicates,
-        mask,
-    };
+    let opts = Options { tolerance, prefer, angle, self_overlap, min_length, drop, keep_duplicates, mask };
 
     let mut callback_error: Option<PyErr> = None;
     let r = py.detach(|| {

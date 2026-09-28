@@ -24,97 +24,99 @@ pip install "deoverlap[vpype]"
 
 ```python
 from shapely.geometry import LineString
-from deoverlap import deoverlap, KeepPolicy
+from deoverlap import deoverlap
 
 geoms = [
     LineString([(0, 0), (2, 0)]),
     LineString([(1, 0.05), (3, 0.05)]),  # parallel, 0.05 away
 ]
-result = deoverlap(geoms, tolerance=0.1, keep=KeepPolicy.LONGEST)
+result = deoverlap(geoms, tolerance=0.1)
 
 print(len(result.kept), "surviving geometries")
 print("wholly removed:", result.wholly_removed)
 ```
 
-`tolerance` is a distance in the same units as the geometries. For a plotter
-with a 0.1 mm pen, start around `0.08`–`0.15` (page mm).
+`tolerance` is a distance in the same units as the geometries: strokes closer
+than this to a kept stroke are cut. For a plotter, use the pen width.
 
-## Keep policy — which stroke wins
+The Python function and the vpype command take the same options with the same
+defaults; `--self-overlap` on the command line is `self_overlap=True` in Python.
+
+## Prefer — which stroke wins
 
 When two corridors collide, priority is explicit:
 
-| `keep=` | Behaviour |
+| `prefer=` | Behaviour |
 |---|---|
-| `first` (default) | Input order — stable, historical behaviour |
-| `longest` | Prefer the stroke that covers more ground |
-| `shortest` | Prefer short marks / detail |
+| `longest` (default) | The stroke that covers more ground wins |
+| `first` | Input order |
+| `shortest` | Short marks / detail win |
 
-![The same three strokes under keep=first, longest and shortest](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/keep_policy.png)
+![The same three strokes under prefer=longest, first and shortest](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/prefer.png)
 
 Original indices are preserved in `result.kept_parts` / `removed_parts` even
 when processing order changes.
 
-## Crop vs drop
+## Angle — which strokes count as overlapping
 
-- `mode="crop"` (default) — subtract the overlap, keep the rest.
-- `mode="drop"` — if more than `drop_fraction` (default 0.5) of a geometry’s
-  length is covered, discard the whole thing instead of leaving stubs.
-
-![crop keeps the protruding stub, drop discards the mostly covered stroke](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/crop_vs_drop.png)
-
-`min_length=` drops lineal fragments shorter than that threshold after clipping
-(points are never removed by it).
-
-## Parallel only — keep crossings
-
-By default a corridor punches a hole in *any* later geometry, including a
-perpendicular cross. For plotters, overdraw at a cross is usually fine; the
-pain is parallel near-coincident runs:
+Two strokes overlap only where their directions differ by at most `angle`
+degrees (default 30). A plotter redrawing a crossing is usually fine; the pain
+is parallel near-coincident runs. `angle=90` counts every nearby stroke, so
+crossings get cut too.
 
 ```python
-result = deoverlap(
-    geoms,
-    tolerance=0.1,
-    parallel_only=True,
-    parallel_angle=30,  # degrees
-)
+result = deoverlap(geoms, tolerance=0.1, angle=30)
 ```
 
-Only corridors whose bearing is within `parallel_angle` of the candidate are
-used as clip masks. Bearings are compared **locally, edge by edge**, so a
-curving ramp is cropped only where it actually runs alongside another road,
-whatever direction its two ends point in.
+Directions are compared **locally, edge by edge**, so a curving ramp is cropped
+only where it actually runs alongside another road, whatever direction its two
+ends point in.
 
-`parallel_angle` is the tangency threshold. Where two strokes meet at an angle
-θ, they overlap for roughly `pen / sin θ`: about 2 pen widths at 30° and 4 at
-15°. The default of 30° catches parallel runs and trims shallow merges.
-Raising it to 45° or 60° trims steeper merges too. Crossings steeper than the
-threshold are never cut.
+Where two strokes meet at an angle θ, they overlap for roughly `pen / sin θ`:
+about 2 pen widths at 30° and 4 at 15°. The default of 30° catches parallel
+runs and trims shallow merges; 45° or 60° trim steeper merges too.
 
-![Without parallel_only the crossings get punched; with it only the parallel duplicate is cropped](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/parallel_only.png)
+![angle=90 cuts the crossings too; angle=30 only crops the parallel duplicate](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/angle.png)
 
-## Groups — split pieces stay one object
+## Crop or drop
 
-When a ring is cut by a corridor it becomes two arcs. With `group=True`
-(default) those arcs are returned as **one** multipart geometry under the
-original input index — a logical stroke, not two anonymous objects:
+By default the overlap is cut away and the rest of the stroke is kept. With
+`drop=0.5`, a stroke that would lose more than half its length is discarded
+whole instead of leaving stubs.
+
+![drop=None keeps the protruding stub, drop=0.5 discards the mostly covered stroke](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/crop_vs_drop.png)
+
+`min_length=` drops pieces shorter than that after cutting (points are never
+removed by it).
+
+## Split pieces stay one object
+
+When a ring is cut by a corridor it becomes two arcs. Those arcs are returned
+as **one** multipart geometry under the original input index — a logical
+stroke, not two anonymous objects:
 
 ```python
 ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
 cutter = LineString([(1, -1), (1, 3)])
-result = deoverlap([cutter, ring], 0.15, group=True)
+result = deoverlap([cutter, ring], 0.15, prefer="first", angle=90)
 
 result.kept_parts[1]  # MultiLineString of both arcs
 ```
 
-Set `group=False` for a flat list of primitive pieces (origins still recorded
-in `kept_parts`).
+Use `flatten_geometries(result.kept)` for a flat list of primitive pieces.
 
-![A ring cut by a line: one grouped result versus separate arcs](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/groups.png)
+![A ring cut by a line stays one entry in result.kept](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/groups.png)
 
-This is the right model for layer-aware pipelines too: treat each input
-geometry as a group, run deoverlap per layer, and never let one layer’s
-corridor eat another layer’s groups unless you pass a shared `mask`.
+## Self-overlap
+
+A thin road outline is often **one** LineString (left kerb → end cap → right
+kerb). Normally deoverlap never compares a geometry to itself, so the two sides
+stay as a heavy double stroke. With `self_overlap=True` every edge is its own
+corridor, so opposite sides can suppress each other. Neighbouring edges never
+cut each other, so joints are not nibbled, unless the path folds back on itself
+like a hairpin.
+
+![A thin ribbon drawn as one polyline: untouched normally, one side suppressed with self_overlap](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/self_overlap.png)
 
 ## Multi-stage with a carried mask
 
@@ -131,17 +133,14 @@ Stage 2 is clipped against everything stage 1 kept.
 
 | Field | Meaning |
 |---|---|
-| `kept` | Drawable geometries (grouped or flat) |
-| `removed` | Flattened cut pieces (if `keep_duplicates=True`) |
+| `kept` | Surviving geometries, one per input that kept some ink |
+| `removed` | Cut pieces, flattened (if `keep_duplicates=True`) |
 | `kept_parts` | `{original_index: geometry}` |
-| `removed_parts` | `{original_index: geometry}` |
+| `removed_parts` | `{original_index: geometry}` (if `keep_duplicates=True`) |
 | `wholly_removed` | Indices removed entirely |
 | `mask` | Corridor polygons (for the next stage) |
 
-Iterating the result still yields the legacy
-`(kept, kept_map, removed, mask)` tuple.
-
-## Performance notes
+## Performance
 
 The engine is written in Rust (on the [`geo`](https://crates.io/crates/geo)
 crate) and ships as a compiled extension, so `pip install` needs no Rust
@@ -156,26 +155,28 @@ endpoint-only matching:
 
 ```bash
 pip install "deoverlap[vpype]"
-vpype read map.svg deoverlap -t 0.1mm --keep longest -l 1,2,3 write out.svg
+vpype read map.svg deoverlap -t 0.1mm -l 1,2,3 write out.svg
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-t` / `--tolerance` | `0.1mm` | Corridor half-width |
-| `--keep` | `longest` | `first` \| `longest` \| `shortest` |
-| `--mode` | `crop` | `crop` \| `drop` |
-| `--min-length` | `0` | Drop stubs shorter than this |
-| `--parallel-only` | on | Do not punch perpendicular crossings |
-| `--parallel-angle` | `30` | Local bearing window in degrees |
-| `--segments` | off | Self-overlap (explode edges; see below) |
-| `--segment-adjacency` | `1` | Keep N neighbours on the same chain |
-| `-l` | `all` | Target layer(s) |
-| `-k` | off | Keep removed pieces on a new layer |
+| `-t`, `--tolerance` | `0.1mm` | Corridor radius, usually the pen width |
+| `--prefer` | `longest` | `longest` \| `first` \| `shortest` |
+| `--angle` | `30` | Max direction difference in degrees; `90` cuts crossings too |
+| `--self-overlap` | off | Let a path overlap itself |
+| `-m`, `--min-length` | `0mm` | Drop pieces shorter than this after cutting |
+| `--drop` | off | Discard a stroke when more than this fraction would be cut |
+| `-k`, `--keep-duplicates` | off | Keep removed pieces in a separate layer |
+| `-p`, `--progress-bar` | off | Display a progress bar |
+| `-l`, `--layer` | `all` | Target layer(s) |
+
+`-t`, `-l`, `-k` and `-p` mean the same as in vpype's own commands and the
+`deduplicate` plugin; `-m` matches `vpype filter`.
 
 ### Walkthrough with the bundled example
 
 `examples/parallel_strokes.svg` is a tiny card with two near-parallel pairs
-(0.05 mm apart), one deliberate cross, and a dual-kerb rectangle drawn as a
+(0.05 mm apart), one deliberate cross, and a dual-kerb rectangle drawn as a
 **single** polyline. No OSM dump required — open it, run the commands, open the
 outputs side by side.
 
@@ -185,16 +186,16 @@ vpype read examples/parallel_strokes.svg stat
 
 # Crop near-parallel duplicates; leave the perpendicular cross alone
 vpype read examples/parallel_strokes.svg \
-  deoverlap -t 0.1mm --keep longest --parallel-only -l 1 \
+  deoverlap -t 0.1mm -l 1 \
   write examples/out_parallel.svg
 
 # Same, but also let the dual-kerb ring collapse against itself
 vpype read examples/parallel_strokes.svg \
-  deoverlap -t 0.12mm --keep longest --parallel-only --segments -l 1 \
-  write examples/out_segments.svg
+  deoverlap -t 0.12mm --self-overlap -l 1 \
+  write examples/out_self_overlap.svg
 
 vpype read examples/out_parallel.svg stat
-vpype read examples/out_segments.svg stat
+vpype read examples/out_self_overlap.svg stat
 ```
 
 What to look for (in the SVG or in `stat`’s drawn length):
@@ -202,9 +203,9 @@ What to look for (in the SVG or in `stat`’s drawn length):
 1. **Before** — each parallel pair is a double stroke; the ring reads as a heavy
    double outline.
 2. **`out_parallel.svg`** — each pair reduced to one survivor; the cross still
-   there; the ring still double (one geometry cannot self-crop).
-3. **`out_segments.svg`** — the ring’s opposite sides suppress each other, so
-   the dual kerb thins toward a single outline.
+   there; the ring still double (one geometry cannot overlap itself).
+3. **`out_self_overlap.svg`** — the ring’s opposite sides suppress each other,
+   so the dual kerb thins toward a single outline.
 
 ### A real map: the MacArthur Maze
 
@@ -218,21 +219,21 @@ overlap on paper.
 ```bash
 vpype read examples/macarthur_maze.svg stat
 vpype read examples/macarthur_maze.svg \
-  deoverlap -t 0.5mm --keep longest --parallel-angle 90 --min-length 1mm \
+  deoverlap -t 0.5mm --angle 90 -m 1mm \
   write examples/out_maze.svg
 vpype read examples/out_maze.svg stat
 ```
 
-`--parallel-angle 90` is the maximum: every nearby stroke counts, whatever its
+`--angle 90` is the maximum: every nearby stroke counts, whatever its
 direction. Side streets stop where the main road's ink begins, and at crossings
 the shorter path is split around the longer one. The gap is exactly the other
 road's ink width, so on paper the crossing still looks whole, just without the
 dark spot of doubled ink.
 
 Cutting leaves fragments; almost every piece under 1 mm on this card is one.
-`--min-length 1mm` (two pen widths) drops them. The path count goes from 1473
-to 860 and the drawn length drops by 35%. For the more conservative default
-(`--parallel-angle 30`, crossings left alone), the same card loses about 21%.
+`-m 1mm` (two pen widths) drops them. The path count goes from 1473 to 860 and
+the drawn length drops by 35%. With the default `--angle 30` (crossings left
+alone) and the same `-m 1mm`, the card loses about 23%.
 
 ![The whole card: removed ink in red, the dashed box is the zoom below](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_map.png)
 
@@ -260,24 +261,9 @@ Chain the command to give each layer its own settings:
 
 ```bash
 vpype read map.svg \
-  deoverlap -t 0.1mm --keep longest --parallel-only -l 3,4 \
-  deoverlap -t 0.15mm --keep longest --parallel-only --segments -l 5 \
+  deoverlap -t 0.1mm -l 3,4 \
+  deoverlap -t 0.15mm --self-overlap -l 5 \
   write opt.svg
-```
-
-### Self-overlap (`--segments`)
-
-A thin road outline is often **one** LineString (left kerb → end cap → right
-kerb). Without `--segments`, deoverlap never compares a geometry to itself, so
-the two sides stay as a heavy double stroke. With `--segments`, every edge is
-its own corridor unit; opposite sides can suppress each other, while immediate
-neighbours on the same chain (`--segment-adjacency`, default 1) stay intact so
-joints are not nibbled.
-
-![A thin ribbon drawn as one polyline: untouched without segments, one side suppressed with segments](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/segments.png)
-
-```bash
-vpype read map.svg deoverlap -t 0.15mm --keep longest --segments -l 1 write out.svg
 ```
 
 ## API
@@ -287,15 +273,11 @@ deoverlap(
     geometries,
     tolerance,
     *,
-    keep="first",          # first | longest | shortest
-    mode="crop",           # crop | drop
+    prefer="longest",      # longest | first | shortest
+    angle=30.0,            # degrees, 0–90; 90 cuts crossings too
+    self_overlap=False,
     min_length=0.0,
-    drop_fraction=0.5,
-    parallel_only=False,
-    parallel_angle=30.0,
-    segments=False,        # self-overlap via edge explosion
-    segment_adjacency=1,
-    group=True,
+    drop=None,             # fraction 0–1; None always crops
     keep_duplicates=False,
     progress_bar=False,
     mask=None,

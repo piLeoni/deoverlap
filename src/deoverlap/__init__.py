@@ -1,21 +1,19 @@
 """De-overlap Shapely geometries that sit within a tolerance of each other."""
 
-__version__ = "3.2.2"
+__version__ = "4.0.0"
 
 from .deoverlap import (
-    ClipMode,
     DeoverlapResult,
     GeomInput,
-    KeepPolicy,
+    Prefer,
     deoverlap,
     flatten_geometries,
 )
 
 __all__ = [
-    "ClipMode",
     "DeoverlapResult",
     "GeomInput",
-    "KeepPolicy",
+    "Prefer",
     "deoverlap",
     "flatten_geometries",
     "__version__",

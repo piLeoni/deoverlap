@@ -104,7 +104,7 @@ def hero():
         LineString([(-2.8, 1.0), (3.2, 1.0)]),
         _circle(3.0, -0.2, 0.5),
     ]
-    result = deoverlap(geoms, 0.15, keep_duplicates=True)
+    result = deoverlap(geoms, 0.15, prefer="first", angle=90, keep_duplicates=True)
     fig, ax = plt.subplots(figsize=(6, 6))
     _result(ax, result, None)
     _legend(fig)
@@ -117,30 +117,30 @@ def crop_vs_drop():
         LineString([(1.2, 0.15), (4.8, 0.15)]),
     ]
     fig, axes = plt.subplots(1, 2, figsize=(10, 1.8))
-    for ax, mode in zip(axes, ["crop", "drop"]):
-        r = deoverlap(geoms, 0.25, mode=mode, keep_duplicates=True)
-        _result(ax, r, f'mode="{mode}"', lw=2)
+    for ax, drop in zip(axes, [None, 0.5]):
+        r = deoverlap(geoms, 0.25, prefer="first", drop=drop, keep_duplicates=True)
+        _result(ax, r, f"drop={drop}", lw=2)
         ax.set_ylim(-0.4, 0.55)
     _legend(fig)
     _save(fig, "crop_vs_drop.png")
 
 
-def keep_policy():
+def prefer():
     geoms = [
         LineString([(0, 0), (1.2, 0)]),
         LineString([(0.1, 0.15), (4, 0.15)]),
         LineString([(2.5, 0.0), (3.0, 0.0)]),
     ]
     fig, axes = plt.subplots(1, 3, figsize=(13, 1.8))
-    for ax, keep in zip(axes, ["first", "longest", "shortest"]):
-        r = deoverlap(geoms, 0.25, keep=keep, keep_duplicates=True)
-        _result(ax, r, f'keep="{keep}"', lw=2)
+    for ax, choice in zip(axes, ["longest", "first", "shortest"]):
+        r = deoverlap(geoms, 0.25, prefer=choice, keep_duplicates=True)
+        _result(ax, r, f'prefer="{choice}"', lw=2)
         ax.set_ylim(-0.4, 0.55)
     _legend(fig)
-    _save(fig, "keep_policy.png")
+    _save(fig, "prefer.png")
 
 
-def parallel_only():
+def angle():
     geoms = [
         LineString([(0, 0), (4, 0)]),
         LineString([(0.5, 0.07), (3.5, 0.07)]),
@@ -148,37 +148,35 @@ def parallel_only():
         LineString([(3.0, -1.2), (3.4, 1.2)]),
     ]
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.4))
-    for ax, flag in zip(axes, [False, True]):
-        r = deoverlap(geoms, 0.15, parallel_only=flag, keep_duplicates=True)
-        _result(ax, r, f"parallel_only={flag}")
+    for ax, degrees in zip(axes, [90, 30]):
+        r = deoverlap(geoms, 0.15, prefer="first", angle=degrees, keep_duplicates=True)
+        _result(ax, r, f"angle={degrees}")
     _legend(fig)
-    _save(fig, "parallel_only.png")
+    _save(fig, "angle.png")
 
 
 def groups():
     ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
     cutter = LineString([(1, -0.6), (1, 2.6)])
-    fig, axes = plt.subplots(1, 2, figsize=(8, 4))
-    for ax, flag in zip(axes, [True, False]):
-        r = deoverlap([cutter, ring], 0.15, group=flag)
-        for i, geom in enumerate(r.kept):
-            _draw(ax, [geom], GROUP_COLORS[i % len(GROUP_COLORS)], 3)
-        _frame(ax, f"group={flag}  ->  {len(r.kept)} results")
-    fig.text(0.5, 0.02, "one colour per entry in result.kept", ha="center",
-             fontsize=9, color="#555")
+    fig, ax = plt.subplots(figsize=(4, 4))
+    r = deoverlap([cutter, ring], 0.15, prefer="first", angle=90)
+    for i, geom in enumerate(r.kept):
+        _draw(ax, [geom], GROUP_COLORS[i % len(GROUP_COLORS)], 3)
+    _frame(ax, f"{len(r.kept)} entries in result.kept")
+    fig.text(0.5, 0.02, "one colour per entry", ha="center", fontsize=9, color="#555")
     _save(fig, "groups.png")
 
 
-def segments():
+def self_overlap():
     ribbon = LineString([(0, 0), (6, 0), (6.5, 0.4), (6, 0.08), (0, 0.08), (0, 0)])
     fig, axes = plt.subplots(2, 1, figsize=(10, 3.2))
     for ax, flag in zip(axes, [False, True]):
-        r = deoverlap([ribbon], 0.1, segments=flag, parallel_only=True,
-                      keep="first", min_length=0.05, keep_duplicates=True)
-        _result(ax, r, f"segments={flag}", lw=2)
+        r = deoverlap([ribbon], 0.1, prefer="first", self_overlap=flag,
+                      min_length=0.05, keep_duplicates=True)
+        _result(ax, r, f"self_overlap={flag}", lw=2)
         ax.set_ylim(-0.3, 0.6)
     _legend(fig)
-    _save(fig, "segments.png")
+    _save(fig, "self_overlap.png")
 
 
 _NUM = re.compile(r"-?\d+(?:\.\d+)?")
@@ -237,8 +235,7 @@ def _box(ax, bounds):
 def osm_map(tolerance=0.5, pen=0.5, angle=90, zoom_center=(55, -42), zoom_size=14):
     src = ROOT / "examples" / "macarthur_maze.svg"
     geoms = _read_svg_paths(src)
-    r = deoverlap(geoms, tolerance, keep="longest", parallel_only=True,
-                  parallel_angle=angle, min_length=2 * pen, keep_duplicates=True)
+    r = deoverlap(geoms, tolerance, angle=angle, min_length=2 * pen, keep_duplicates=True)
 
     before, after = _total(geoms), _total(r.kept)
     saved = 100 * (1 - after / before)
@@ -263,8 +260,7 @@ def osm_map(tolerance=0.5, pen=0.5, angle=90, zoom_center=(55, -42), zoom_size=1
     _mask(axes[1], r.mask, lw=0.4)
     _draw(axes[1], r.kept, KEPT, 1.4)
     _draw(axes[1], r.removed, REMOVED, 1.8, zorder=3)
-    _frame(axes[1], f"-t {tolerance}mm --parallel-angle {angle} --min-length {2 * pen:g}mm",
-           zoom)
+    _frame(axes[1], f"-t {tolerance}mm --angle {angle} -m {2 * pen:g}mm", zoom)
     _ink(axes[2], r.kept, pen, zoom)
     _frame(axes[2], f"after, {pen} mm pen", zoom)
     _legend(fig)
@@ -278,10 +274,10 @@ def osm_map(tolerance=0.5, pen=0.5, angle=90, zoom_center=(55, -42), zoom_size=1
 def main():
     hero()
     crop_vs_drop()
-    keep_policy()
-    parallel_only()
+    prefer()
+    angle()
     groups()
-    segments()
+    self_overlap()
     osm_map()
 
 

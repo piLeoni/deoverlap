@@ -16,7 +16,7 @@ pub(crate) struct MaskIndex {
     angles: Vec<Option<f64>>,
     seg_ids: Vec<Option<SegId>>,
     tree: RTree<Entry>,
-    parallel_only: bool,
+    by_bearing: bool,
     segment_adjacency: i64,
 }
 
@@ -25,13 +25,13 @@ fn aabb(r: Rect<f64>) -> AABB<[f64; 2]> {
 }
 
 impl MaskIndex {
-    pub(crate) fn new(initial: &[Polygon<f64>], parallel_only: bool, segment_adjacency: i64) -> Self {
+    pub(crate) fn new(initial: &[Polygon<f64>], by_bearing: bool, segment_adjacency: i64) -> Self {
         let mut index = Self {
             polys: Vec::new(),
             angles: Vec::new(),
             seg_ids: Vec::new(),
             tree: RTree::new(),
-            parallel_only,
+            by_bearing,
             segment_adjacency: segment_adjacency.max(0),
         };
         for p in initial {
@@ -41,7 +41,7 @@ impl MaskIndex {
     }
 
     pub(crate) fn add(&mut self, corridor: MultiPolygon<f64>, angle: Option<f64>, seg_id: Option<SegId>) {
-        let angle = if self.parallel_only { angle } else { None };
+        let angle = if self.by_bearing { angle } else { None };
         self.push(corridor, angle, seg_id);
     }
 
@@ -78,11 +78,11 @@ impl MaskIndex {
             .map(|e| e.data)
             .filter(|&i| {
                 if let (Some(a), Some(b)) = (seg_id, self.seg_ids[i].as_ref()) {
-                    if a.adjacent(b, self.segment_adjacency) && !a.folds_back(b, angle_tol_rad) {
+                    if a.adjacent(b, self.segment_adjacency) && !a.folds_back(b) {
                         return false;
                     }
                 }
-                if self.parallel_only {
+                if self.by_bearing {
                     if let (Some(a), Some(b)) = (angle, self.angles[i]) {
                         if crate::angle_diff(a, b) > angle_tol_rad {
                             return false;
