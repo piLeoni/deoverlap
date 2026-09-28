@@ -9,10 +9,12 @@ visually merge on paper, so only one of them should keep the ink. Unlike
 endpoint-only “deduplicate” tools, this library builds a **corridor** around
 each kept stroke and crops (or drops) later strokes that fall inside it.
 
-![Tangent circles and a line: the corridor mask (orange) around kept strokes (blue) crops the overlapping arcs (red)](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/hero.png)
+![A city map at pen width: before, what deoverlap removed, after](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_zoom.png)
 
-In every figure, blue is kept, red is removed and the thin orange outline is
-the corridor mask. They are rendered by `examples/make_figures.py`.
+Oakland's MacArthur Maze drawn with a 0.5 mm pen: doubled carriageways and
+junctions darken where the pen passes twice (left); deoverlap removes the red
+strokes (middle) and the ink becomes one even layer (right). See
+[A real map](#a-real-map-the-macarthur-maze) below.
 
 ```bash
 pip install deoverlap
@@ -41,6 +43,17 @@ than this to a kept stroke are cut. For a plotter, use the pen width.
 
 The Python function and the vpype command take the same options with the same
 defaults; `--self-overlap` on the command line is `self_overlap=True` in Python.
+
+## How it works
+
+Geometries are processed in priority order. Each kept stroke gets a corridor
+of radius `tolerance` around it, and every later stroke loses the parts that
+fall inside a corridor.
+
+![Tangent circles and a line: the corridor mask (orange) around kept strokes (blue) crops the overlapping arcs (red)](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/hero.png)
+
+In every figure, blue is kept, red is removed and the thin orange outline is
+the corridor mask. They are rendered by `examples/make_figures.py`.
 
 ## Prefer — which stroke wins
 
@@ -235,15 +248,13 @@ Cutting leaves fragments; almost every piece under 1 mm on this card is one.
 the drawn length drops by 35%. With the default `--angle 30` (crossings left
 alone) and the same `-m 1mm`, the card loses about 23%.
 
-![The whole card: removed ink in red, the dashed box is the zoom below](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_map.png)
+![The whole card: removed ink in red, the dashed box is the zoom at the top](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_map.png)
 
-In the zoom, the ink panels are blended like real ink: every pass multiplies
-the colour, so the darker the blue, the more times the pen went over the same
-spot. Before, the dark bands are doubled carriageways and the dark dots are
-junctions, where a round pen tip lands on ink that is already there. After,
-the ink is one even layer.
-
-![Zoom at pen width: before, what was removed, after](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_zoom.png)
+The zoom at the top of this page is the dashed box. Its ink panels are blended
+like real ink: every pass multiplies the colour, so the darker the blue, the
+more times the pen went over the same spot. Before, the dark bands are doubled
+carriageways and the dark dots are junctions, where a round pen tip lands on
+ink that is already there. After, the ink is one even layer.
 
 To try another place (needs `pip install osmnx`):
 
