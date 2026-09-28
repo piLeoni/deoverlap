@@ -1,6 +1,6 @@
 """De-overlap Shapely geometries that sit within a tolerance of each other."""
 
-__version__ = "4.0.0"
+__version__ = "4.1.0"
 
 from .deoverlap import (
     DeoverlapResult,
