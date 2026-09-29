@@ -24,12 +24,19 @@ for dir in npm/* .; do
     exit 1
   fi
   echo "publishing $name@$ver"
-  (cd "$dir" && npm publish --access public --ignore-scripts $OTP_FLAG)
-  for _ in 1 2 3 4 5; do published "$name" "$ver" && break; sleep 3; done
-  if ! published "$name" "$ver"; then
-    echo "FAILED $name@$ver — run this script again to resume"
+  if ! (cd "$dir" && npm publish --access public --ignore-scripts $OTP_FLAG); then
+    published "$name" "$ver" || { echo "FAILED $name@$ver — run this script again to resume"; exit 1; }
+  fi
+  # npm can exit 0 without publishing, and a real publish can take minutes to
+  # show on the registry: wait for it before calling it done.
+  printf "waiting for %s@%s on the registry" "$name" "$ver"
+  for _ in $(seq 60); do published "$name" "$ver" && break; printf "."; sleep 5; done
+  echo
+  if published "$name" "$ver"; then
+    echo "done $name@$ver"
+  else
+    echo "$name@$ver not visible after 5 minutes; run this script again later to check"
     exit 1
   fi
-  echo "done $name@$ver"
 done
 echo "ALL DONE"
