@@ -11,18 +11,23 @@ each kept stroke and crops (or drops) later strokes that fall inside it.
 
 ![A city map at pen width: before, what deoverlap removed, after](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_zoom.png)
 
-![The whole card: removed ink in red, the dashed box is the zoom above](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_map.png)
-
-Oakland's MacArthur Maze drawn with a 0.5 mm pen. In the zoom (the dashed box
-on the card), doubled carriageways and junctions darken where the pen passes
-twice (left); deoverlap removes the red strokes (middle) and the ink becomes
-one even layer (right). See [A real map](#a-real-map-the-macarthur-maze) below.
+Oakland's MacArthur Maze: 1473 OpenStreetMap paths on a 100 mm card, at a
+tolerance equal to the 0.5 mm pen. In this zoom (a half-centimetre of the
+card) doubled carriageways and junctions darken where the pen passes twice
+(left); deoverlap removes the red strokes (middle) and the ink becomes one
+even layer (right). In every figure blue is kept, red is removed, and the thin
+orange outline is the corridor mask. The whole card, and the exact commands,
+are in [A real map](#a-real-map-the-macarthur-maze) below.
 
 ```bash
 pip install deoverlap
 # with the vpype command:
 pip install "deoverlap[vpype]"
 ```
+
+Node.js bindings (same Rust engine, flat coordinate buffers): see
+[`bindings/node/README.md`](bindings/node/README.md) and
+[`docs/WIRE_FORMAT.md`](docs/WIRE_FORMAT.md).
 
 ## Quick start
 
@@ -120,7 +125,13 @@ result.kept_parts[1]  # MultiLineString of both arcs
 
 Use `flatten_geometries(result.kept)` for a flat list of primitive pieces.
 
-![A ring cut by a line stays one entry in result.kept](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/groups.png)
+The grouping survives the other way too. With
+[`drop=0.5`](#crop-or-drop) and the cutter placed far enough left to take most
+of the ring, no fragment is kept at all: `kept_parts` simply has no entry for
+it, while `removed_parts[1]` hands back the original ring, nothing re-stitched
+from the pieces:
+
+![A ring cut on the right stays one multipart entry in result.kept; with drop=0.5 it goes whole into result.removed_parts](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/groups.png)
 
 ## Self-overlap
 
@@ -137,7 +148,7 @@ like a hairpin.
 
 ```python
 r1 = deoverlap(batch1, 0.1)
-r2 = deoverlap(batch2, 0.1, mask=r1.mask)
+r2 = deoverlap(batch2, 0.1, mask=r1)  # or mask=r1.mask
 ```
 
 Stage 2 is clipped against everything stage 1 kept.
@@ -250,11 +261,10 @@ Cutting leaves fragments; almost every piece under 1 mm on this card is one.
 `-m 1mm` (two pen widths) drops them. The path count goes from 1473 to 860 and
 the drawn length drops by 35%.
 
-The images at the top of this page show this run. Their ink panels are blended
-like real ink: every pass multiplies the colour, so the darker the blue, the
-more times the pen went over the same spot. Before, the dark bands are doubled
-carriageways and the dark dots are junctions, where a round pen tip lands on
-ink that is already there. After, the ink is one even layer.
+The [images at the top of this page](#deoverlap) are this run, zoomed to one
+corner of the card. No OSM dump is needed to reproduce them: they are rendered
+by `examples/make_figures.py` from the card committed at
+`examples/macarthur_maze.svg`.
 
 With the default `--angle 30` crossings are left alone: parallel runs are
 still merged, but both roads are drawn through every junction, and the card

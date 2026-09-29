@@ -18,8 +18,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - run: cargo test -p deoverlap-core
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: cargo build -p deoverlap-node --release
+      - working-directory: bindings/node
+        run: |
+          npm install
+          npm run build
+          npm test
 
   wheels:
     name: wheel (${{ matrix.os }}, ${{ matrix.target }}, ${{ matrix.libc }})

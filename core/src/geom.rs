@@ -161,15 +161,18 @@ pub(crate) fn polygon_intervals(p: Coord, q: Coord, poly: &Polygon, out: &mut Ve
     }
 }
 
-/// Sort and merge overlapping intervals.
-pub(crate) fn merge_intervals(mut ivs: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+/// Sort and merge overlapping intervals in place.
+pub(crate) fn merge_intervals_in_place(ivs: &mut Vec<(f64, f64)>) {
     ivs.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut out: Vec<(f64, f64)> = Vec::with_capacity(ivs.len());
-    for (s0, s1) in ivs {
-        match out.last_mut() {
-            Some(last) if s0 <= last.1 => last.1 = last.1.max(s1),
-            _ => out.push((s0, s1)),
+    let mut n = 0;
+    for i in 0..ivs.len() {
+        let (s0, s1) = ivs[i];
+        if n > 0 && s0 <= ivs[n - 1].1 {
+            ivs[n - 1].1 = ivs[n - 1].1.max(s1);
+        } else {
+            ivs[n] = (s0, s1);
+            n += 1;
         }
     }
-    out
+    ivs.truncate(n);
 }

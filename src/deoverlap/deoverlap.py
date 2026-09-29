@@ -18,9 +18,8 @@ converts between Shapely geometries and coordinates.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable, List, Literal, Optional, Sequence, Union
+from typing import Iterable, List, Literal, Optional, Sequence, Tuple, Union
 
-import shapely
 from shapely import get_coordinates
 from shapely.geometry import (
     GeometryCollection,
@@ -47,6 +46,8 @@ except ImportError:  # pragma: no cover
 GeomInput = Union[BaseGeometry, Iterable["GeomInput"]]
 FlatGeom = Union[LineString, Point]
 Prefer = Literal["longest", "first", "shortest"]
+Capsule = Tuple[Tuple[float, float], Tuple[float, float], float]
+MaskInput = Union[Sequence[Polygon], "DeoverlapResult"]
 
 
 @dataclass
@@ -56,19 +57,22 @@ class DeoverlapResult:
     kept_parts: dict[int, BaseGeometry] = field(default_factory=dict)
     removed_parts: dict[int, BaseGeometry] = field(default_factory=dict)
     wholly_removed: List[int] = field(default_factory=list)
-    _carried: List[Polygon] = field(default_factory=list, repr=False)
-    _tolerance: float = field(default=0.0, repr=False)
-    _mask: Optional[List[Polygon]] = field(default=None, repr=False)
+    _mask_polygons: List[Polygon] = field(default_factory=list, repr=False)
+    _mask_capsules: List[Capsule] = field(default_factory=list, repr=False)
+    _mask_shapely: Optional[List[Polygon]] = field(default=None, repr=False)
 
     @property
     def mask(self) -> List[Polygon]:
         """Corridor polygons of everything kept, plus the mask passed in.
 
-        Built on first access; pass it as ``mask`` to a later run.
+        Built on first access from the engine's capsules; pass ``mask=r1`` or
+        ``mask=r1.mask`` to a later run.
         """
-        if self._mask is None:
-            self._mask = self._carried + _corridors(self.kept, self._tolerance)
-        return self._mask
+        if self._mask_shapely is None:
+            self._mask_shapely = list(self._mask_polygons) + [
+                _capsule_polygon(c) for c in self._mask_capsules
+            ]
+        return self._mask_shapely
 
 
 # =============================================================================
@@ -129,14 +133,41 @@ def _from_coords(parts: Sequence[Sequence[Sequence[float]]]) -> List[FlatGeom]:
     return [Point(p[0]) if len(p) == 1 else LineString(p) for p in parts]
 
 
-def _corridors(geoms: List[BaseGeometry], tolerance: float) -> List[Polygon]:
-    if not geoms:
-        return []
-    strokes = [GeometryCollection(flatten_geometries(g)) for g in geoms]
-    out: List[Polygon] = []
-    for poly in shapely.buffer(strokes, tolerance):
-        out.extend(poly.geoms if isinstance(poly, MultiPolygon) else [poly])
-    return [p for p in out if not p.is_empty]
+def _capsule_polygon(capsule: Capsule) -> Polygon:
+    (ax, ay), (bx, by), radius = capsule
+    if ax == bx and ay == by:
+        g = Point(ax, ay).buffer(radius)
+    else:
+        g = LineString([(ax, ay), (bx, by)]).buffer(radius, cap_style="round", join_style="round")
+    if isinstance(g, Polygon):
+        return g
+    return max(g.geoms, key=lambda p: p.area)
+
+
+def _resolve_mask(
+    mask: Optional[MaskInput],
+) -> tuple[list[Polygon], list[Capsule], list[tuple[list[list[float]], list[list[list[float]]]]]]:
+    """Polygons for Shapely callers, capsules for the engine, polygon rings for ``_core``."""
+    if mask is None:
+        return [], [], []
+    if isinstance(mask, DeoverlapResult):
+        polys = list(mask._mask_polygons)
+        caps = list(mask._mask_capsules)
+        rings = [
+            (get_coordinates(p.exterior).tolist(), [get_coordinates(r).tolist() for r in p.interiors])
+            for p in polys
+            if not p.is_empty
+        ]
+        return polys, caps, rings
+    polys: list[Polygon] = []
+    for m in mask:
+        polys.extend(m.geoms if isinstance(m, MultiPolygon) else [m])
+    rings = [
+        (get_coordinates(p.exterior).tolist(), [get_coordinates(r).tolist() for r in p.interiors])
+        for p in polys
+        if not p.is_empty
+    ]
+    return polys, [], rings
 
 
 def _grouped(
@@ -173,7 +204,7 @@ def deoverlap(
     drop: Optional[float] = None,
     keep_duplicates: bool = False,
     progress_bar: bool = False,
-    mask: Optional[Sequence[Polygon]] = None,
+    mask: Optional[MaskInput] = None,
 ) -> DeoverlapResult:
     """De-overlap geometries that fall within ``tolerance`` of each other.
 
@@ -193,14 +224,11 @@ def deoverlap(
         keep_duplicates: Collect the removed pieces in ``removed`` and
             ``removed_parts``.
         progress_bar: Show a tqdm progress bar.
-        mask: Corridors from a previous run (``result.mask``) that also cut
-            this one.
+        mask: Corridors from a previous run (``result`` or ``result.mask``)
+            that also cut this one.
     """
     geoms = _as_list(geometries)
-
-    mask_polys: list[Polygon] = []
-    for m in mask or []:
-        mask_polys.extend(m.geoms if isinstance(m, MultiPolygon) else [m])
+    _, mask_capsules, mask_rings = _resolve_mask(mask)
 
     bar = None
     if progress_bar and tqdm is not None:
@@ -212,7 +240,7 @@ def deoverlap(
         bar.update(done - bar.n)
 
     try:
-        kept, removed_parts, removed, wholly = _core.deoverlap(
+        kept, removed_parts, removed, wholly, out_mask = _core.deoverlap(
             [_to_coords(g) for g in geoms],
             tolerance,
             prefer=prefer,
@@ -221,11 +249,8 @@ def deoverlap(
             min_length=min_length,
             drop=drop,
             keep_duplicates=keep_duplicates,
-            mask=[
-                (get_coordinates(p.exterior).tolist(), [get_coordinates(r).tolist() for r in p.interiors])
-                for p in mask_polys
-                if not p.is_empty
-            ],
+            mask=mask_rings,
+            mask_capsules=mask_capsules,
             progress=on_progress if bar is not None else None,
         )
     finally:
@@ -233,7 +258,16 @@ def deoverlap(
             bar.close()
 
     snap = tolerance * _SNAP_FRACTION
-    result = DeoverlapResult(wholly_removed=list(wholly), _carried=mask_polys, _tolerance=tolerance)
+    out_caps, out_polys = out_mask
+    result = DeoverlapResult(
+        wholly_removed=list(wholly),
+        _mask_polygons=[
+            Polygon(exterior, holes=interiors or None)
+            for exterior, interiors in out_polys
+            if len(exterior) >= 3
+        ],
+        _mask_capsules=list(out_caps),
+    )
     for i, parts in kept:
         grouped = _grouped(_from_coords(parts), geoms[i], snap)
         result.kept_parts[i] = grouped

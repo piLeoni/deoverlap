@@ -168,6 +168,16 @@ def test_mask_carries_across_stages():
     assert len(r2.removed) > 0
 
 
+def test_mask_accepts_result_without_building_polygons():
+    """Passing the result object reuses engine capsules (no ``.mask`` Shapely build)."""
+    r1 = plain([LineString([(0, 0), (2, 0)])], 0.1)
+    assert r1._mask_shapely is None
+    batch2 = [LineString([(1, 0.05), (3, 0.05)])]
+    r2 = plain(batch2, 0.1, mask=r1, keep_duplicates=True)
+    assert r2.kept[0].length < batch2[0].length
+    assert len(r2.removed) > 0
+
+
 @pytest.mark.parametrize("self_overlap", [False, True])
 def test_kept_plus_removed_conserves_length(self_overlap):
     """Removed pieces must not double-count ink that was actually kept."""

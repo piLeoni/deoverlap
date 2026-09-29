@@ -45,3 +45,9 @@ cache/
 
 target/
 src/deoverlap/*.so
+
+# Node bindings (built by `npm run build` in bindings/node)
+bindings/node/node_modules/
+bindings/node/index.js
+bindings/node/index.d.ts
+bindings/node/*.node

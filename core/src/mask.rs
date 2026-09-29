@@ -2,7 +2,8 @@ use rstar::primitives::{GeomWithData, Rectangle};
 use rstar::{RTree, AABB};
 
 use crate::geom::{
-    capsule_interval, merge_intervals, point_in_capsule, point_in_polygon, polygon_intervals,
+    capsule_interval, merge_intervals_in_place, point_in_capsule, point_in_polygon,
+    polygon_intervals,
 };
 use crate::{Capsule, Coord, Mask, Polygon, SegId};
 
@@ -84,16 +85,24 @@ impl MaskIndex {
 
     /// Merged parameter ranges of edge `pq` that fall inside a corridor
     /// running within `angle_tol_rad` of `angle`.
-    pub(crate) fn covered(
+    ///
+    /// Append the merged parameter ranges of edge `pq` that fall inside a
+    /// corridor running within `angle_tol_rad` of `angle` to `ivs`, reusing
+    /// the caller's buffer so the per-edge hot path allocates nothing.
+    pub(crate) fn covered_into(
         &self,
         p: Coord,
         q: Coord,
         angle: Option<f64>,
         angle_tol_rad: f64,
         seg_id: Option<&SegId>,
-    ) -> Vec<(f64, f64)> {
+        ivs: &mut Vec<(f64, f64)>,
+    ) {
+        ivs.clear();
+        if self.tree.size() == 0 && self.polygon_tree.size() == 0 {
+            return;
+        }
         let b = bounds([p, q], 0.0).expect("two points");
-        let mut ivs = Vec::new();
         for e in self.tree.locate_in_envelope_intersecting(&b) {
             let i = e.data;
             if let (Some(a), Some(s)) = (seg_id, self.seg_ids[i].as_ref()) {
@@ -114,9 +123,9 @@ impl MaskIndex {
             }
         }
         for e in self.polygon_tree.locate_in_envelope_intersecting(&b) {
-            polygon_intervals(p, q, &self.polygons[e.data], &mut ivs);
+            polygon_intervals(p, q, &self.polygons[e.data], ivs);
         }
-        merge_intervals(ivs)
+        merge_intervals_in_place(ivs)
     }
 
     pub(crate) fn covers_point(&self, p: Coord) -> bool {

@@ -11,9 +11,12 @@
 //! Polygons are not a separate input type: pass their rings as closed
 //! lines, grouped in one [`Geometry`].
 
+mod flat;
 mod geom;
 mod mask;
 mod merge;
+
+pub use flat::{FlatBatch, FlatError, FlatGeometry, FlatMask, FlatResult, KIND_LINE, KIND_POINT};
 
 use std::f64::consts::PI;
 
@@ -162,6 +165,51 @@ impl DeoverlapResult {
 
 pub fn deoverlap(geoms: &[Geometry], opts: &Options) -> DeoverlapResult {
     deoverlap_with_progress(geoms, opts, &mut |_, _| {})
+}
+
+/// [`deoverlap`] in the flat wire format, for bindings that receive and
+/// return flat buffers instead of nested vectors.
+///
+/// This is the entry point Node and Python are moving to: it decodes once,
+/// runs the same engine, and packs the result back into flat buffers.
+pub fn deoverlap_flat(
+    geoms: &[FlatGeometry],
+    opts: &Options,
+) -> Result<FlatResult, FlatError> {
+    deoverlap_flat_with_progress(geoms, opts, &mut |_, _| {})
+}
+
+/// [`deoverlap_flat`], calling `progress(done, total)` as work advances.
+pub fn deoverlap_flat_with_progress(
+    geoms: &[FlatGeometry],
+    opts: &Options,
+    progress: &mut dyn FnMut(usize, usize),
+) -> Result<FlatResult, FlatError> {
+    let decoded: Vec<Geometry> = geoms
+        .iter()
+        .map(FlatGeometry::to_geometry)
+        .collect::<Result<_, _>>()?;
+    let r = deoverlap_with_progress(&decoded, opts, progress);
+    Ok(FlatResult {
+        kept: r
+            .kept_order
+            .iter()
+            .filter_map(|&i| {
+                r.kept_parts[i].as_ref().map(|g| (i, FlatGeometry::from_geometry(g)))
+            })
+            .collect(),
+        removed_parts: r
+            .removed_parts
+            .iter()
+            .map(|g| g.as_ref().map(FlatGeometry::from_geometry))
+            .collect(),
+        removed: r.removed.iter().map(|p| FlatGeometry::from_geometry(&vec![p.clone()])).collect(),
+        wholly_removed: r.wholly_removed,
+        mask: flat::FlatMask {
+            capsules: r.mask.capsules,
+            polygons: r.mask.polygons,
+        },
+    })
 }
 
 /// Like [`deoverlap`], calling `progress(done, total)` as work advances.
@@ -460,15 +508,20 @@ fn clip_part(
     let mut kept = Runs::default();
     let mut removed = Runs::default();
     let mut changed = false;
+    // Reused per edge: the corridor lookup and its filtered result.
+    let mut ivs: Vec<(f64, f64)> = Vec::new();
+    let mut covered: Vec<(f64, f64)> = Vec::new();
     for w in coords.windows(2) {
         let (a, b) = (w[0], w[1]);
         let slack = snap / dist(a, b);
-        let covered: Vec<(f64, f64)> = mask
-            .covered(a, b, Some(edge_angle(a, b)), angle_tol_rad, seg_id)
-            .into_iter()
-            .filter(|(s0, s1)| s1 - s0 > slack)
-            .map(|(s0, s1)| (if s0 < slack { 0.0 } else { s0 }, if s1 > 1.0 - slack { 1.0 } else { s1 }))
-            .collect();
+        mask.covered_into(a, b, Some(edge_angle(a, b)), angle_tol_rad, seg_id, &mut ivs);
+        covered.clear();
+        covered.extend(
+            ivs.iter()
+                .copied()
+                .filter(|(s0, s1)| s1 - s0 > slack)
+                .map(|(s0, s1)| (if s0 < slack { 0.0 } else { s0 }, if s1 > 1.0 - slack { 1.0 } else { s1 })),
+        );
         if covered.is_empty() {
             kept.extend(a, b, &[(0.0, 1.0)]);
             removed.extend(a, b, &[]);

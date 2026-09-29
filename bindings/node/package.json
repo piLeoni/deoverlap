@@ -1,0 +1,29 @@
+{
+  "name": "deoverlap",
+  "version": "4.2.0",
+  "description": "De-overlap vector strokes (Node.js bindings for deoverlap-core)",
+  "license": "MIT",
+  "repository": "https://github.com/piLeoni/deoverlap",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "name": "deoverlap-node",
+    "triples": {
+      "defaults": true
+    }
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
+    "test": "node --test test/*.mjs"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node",
+    "README.md"
+  ],
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0"
+  }
+}

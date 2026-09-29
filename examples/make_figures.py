@@ -27,7 +27,6 @@ OUT = ROOT / "docs" / "img"
 KEPT = "#3a9fc4"
 REMOVED = "#ff1f4b"
 MASK = "#f07040"
-GROUP_COLORS = ["#3a9fc4", "#8c5cc7", "#2ca25f", "#e0a100", "#d95f02"]
 
 
 def _lines(geom):
@@ -156,14 +155,19 @@ def angle():
 
 
 def groups():
+    """Cut ring vs dropped ring: one entry in ``result.kept`` either way."""
     ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
-    cutter = LineString([(1, -0.6), (1, 2.6)])
-    fig, ax = plt.subplots(figsize=(4, 4))
-    r = deoverlap([cutter, ring], 0.15, prefer="first", angle=90)
-    for i, geom in enumerate(r.kept):
-        _draw(ax, [geom], GROUP_COLORS[i % len(GROUP_COLORS)], 3)
-    _frame(ax, f"{len(r.kept)} entries in result.kept")
-    fig.text(0.5, 0.02, "one colour per entry", ha="center", fontsize=9, color="#555")
+    # Only the sliver right of the cutter's corridor survives, well under
+    # half the ring, so drop=0.5 has to make the whole stroke go.
+    cutter = LineString([(0.6, -0.6), (0.6, 2.6)])
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.4))
+    for ax, drop in zip(axes, [None, 0.5]):
+        r = deoverlap([cutter, ring], 0.15, prefer="first", angle=90,
+                      drop=drop, keep_duplicates=True)
+        _result(ax, r, f"drop={drop}")
+    _legend(fig)
+    fig.text(0.5, 0.02, "one entry in result.kept whether the ring is cut in "
+             "two or disappears", ha="center", fontsize=9, color="#555")
     _save(fig, "groups.png")
 
 
