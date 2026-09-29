@@ -3,7 +3,10 @@
   "version": "4.2.0",
   "description": "De-overlap vector strokes to prevent overdrawing (Node.js bindings for deoverlap-core)",
   "license": "MIT",
-  "repository": "https://github.com/piLeoni/deoverlap",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/piLeoni/deoverlap.git"
+  },
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
@@ -37,5 +40,12 @@
   ],
   "devDependencies": {
     "@napi-rs/cli": "^2.18.0"
+  },
+  "optionalDependencies": {
+    "deoverlap-darwin-arm64": "4.2.0",
+    "deoverlap-darwin-x64": "4.2.0",
+    "deoverlap-linux-arm64-gnu": "4.2.0",
+    "deoverlap-linux-x64-gnu": "4.2.0",
+    "deoverlap-win32-x64-msvc": "4.2.0"
   }
 }
