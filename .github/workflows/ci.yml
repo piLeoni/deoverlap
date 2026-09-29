@@ -1,7 +1,6 @@
 # Builds and tests one abi3 wheel per platform plus the sdist, and one Node
-# addon per platform. Everything is uploaded as artifacts, not published:
-#   gh run download <run-id> -p 'wheel-*' -p sdist -D dist && twine upload dist/*/*
-# For npm, see bindings/node/README.md.
+# addon per platform. Everything is uploaded as artifacts, not published;
+# see docs/RELEASING.md.
 name: CI
 
 on:

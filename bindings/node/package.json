@@ -1,7 +1,23 @@
 {
   "name": "deoverlap",
-  "version": "4.2.0",
-  "description": "De-overlap vector strokes to prevent overdrawing (Node.js bindings for deoverlap-core)",
+  "version": "4.2.1",
+  "description": "De-overlap vector strokes to prevent overdrawing.",
+  "keywords": [
+    "vector",
+    "polyline",
+    "overlap",
+    "overdraw",
+    "plotter",
+    "pen-plotter",
+    "svg",
+    "geometry",
+    "gis",
+    "map",
+    "rust",
+    "napi"
+  ],
+  "homepage": "https://github.com/piLeoni/deoverlap/tree/main/bindings/node#readme",
+  "bugs": "https://github.com/piLeoni/deoverlap/issues",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -30,7 +46,6 @@
     "build:debug": "napi build --platform",
     "test": "node --test test/*.mjs",
     "artifacts": "napi artifacts",
-    "prepublishOnly": "napi prepublish -t npm --skip-gh-release",
     "version": "napi version"
   },
   "files": [

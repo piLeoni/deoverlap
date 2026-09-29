@@ -57,8 +57,9 @@ only the tolerance has a default here, `0.1mm`. Full flag list:
 npm install deoverlap
 ```
 
-Flat buffers, API and building from source: [`bindings/node/README.md`](https://github.com/piLeoni/deoverlap/blob/main/bindings/node/README.md),
-[`docs/WIRE_FORMAT.md`](https://github.com/piLeoni/deoverlap/blob/main/docs/WIRE_FORMAT.md).
+Geometries are flat coordinate arrays; the
+[Node guide](https://www.npmjs.com/package/deoverlap) has JavaScript examples
+for every option and a GeoJSON converter.
 
 ## How it works
 
@@ -170,7 +171,7 @@ Stage 2 is clipped against everything stage 1 kept.
 
 | Field | Meaning |
 |---|---|
-| `kept` | Surviving geometries, one per input that kept something |
+| `kept` | Surviving geometries, one per input that kept something, in processing order |
 | `removed` | Cut pieces, flattened (if `keep_duplicates=True`) |
 | `kept_parts` | `{input_index: geometry}` |
 | `removed_parts` | `{input_index: geometry}` (if `keep_duplicates=True`) |
