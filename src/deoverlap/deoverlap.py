@@ -1,9 +1,8 @@
-"""De-overlap Shapely geometries that sit within a tolerance of each other.
+"""De-overlap vector strokes to prevent overdrawing.
 
 The engine walks geometries in priority order. Each kept piece contributes a
 corridor of radius ``tolerance`` to a *mask*; later pieces are cropped (or
-dropped) where they fall inside that mask. That is the right model for pen plotters: strokes closer than a pen
-width visually merge, so only one of them should keep the ink.
+dropped) where they fall inside that mask.
 
 ``self_overlap=True`` splits every path into edges first, so the two sides of a
 thin road outline — one continuous LineString — can still suppress each other.

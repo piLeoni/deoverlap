@@ -1,0 +1,23 @@
+{
+  "name": "deoverlap-linux-x64-gnu",
+  "version": "4.2.0",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "deoverlap-node.linux-x64-gnu.node",
+  "files": [
+    "deoverlap-node.linux-x64-gnu.node"
+  ],
+  "description": "De-overlap vector strokes to prevent overdrawing (Node.js bindings for deoverlap-core)",
+  "license": "MIT",
+  "engines": {
+    "node": ">= 16"
+  },
+  "repository": "https://github.com/piLeoni/deoverlap",
+  "libc": [
+    "glibc"
+  ]
+}

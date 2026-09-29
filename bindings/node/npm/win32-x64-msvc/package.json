@@ -1,0 +1,20 @@
+{
+  "name": "deoverlap-win32-x64-msvc",
+  "version": "4.2.0",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "deoverlap-node.win32-x64-msvc.node",
+  "files": [
+    "deoverlap-node.win32-x64-msvc.node"
+  ],
+  "description": "De-overlap vector strokes to prevent overdrawing (Node.js bindings for deoverlap-core)",
+  "license": "MIT",
+  "engines": {
+    "node": ">= 16"
+  },
+  "repository": "https://github.com/piLeoni/deoverlap"
+}

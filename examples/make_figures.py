@@ -27,6 +27,7 @@ OUT = ROOT / "docs" / "img"
 KEPT = "#3a9fc4"
 REMOVED = "#ff1f4b"
 MASK = "#f07040"
+GROUP_COLORS = ["#3a9fc4", "#8c5cc7", "#2ca25f", "#e0a100", "#d95f02"]
 
 
 def _lines(geom):
@@ -155,19 +156,20 @@ def angle():
 
 
 def groups():
-    """Cut ring vs dropped ring: one entry in ``result.kept`` either way."""
+    """One colour per object: the cut ring is one entry, flattened it is two."""
+    cutter = LineString([(1, -1), (1, 3)])
     ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
-    # Only the sliver right of the cutter's corridor survives, well under
-    # half the ring, so drop=0.5 has to make the whole stroke go.
-    cutter = LineString([(0.6, -0.6), (0.6, 2.6)])
-    fig, axes = plt.subplots(1, 2, figsize=(10, 3.4))
-    for ax, drop in zip(axes, [None, 0.5]):
-        r = deoverlap([cutter, ring], 0.15, prefer="first", angle=90,
-                      drop=drop, keep_duplicates=True)
-        _result(ax, r, f"drop={drop}")
-    _legend(fig)
-    fig.text(0.5, 0.02, "one entry in result.kept whether the ring is cut in "
-             "two or disappears", ha="center", fontsize=9, color="#555")
+    r = deoverlap([cutter, ring], 0.15, prefer="first", angle=90)
+    flat = flatten_geometries(r.kept)
+
+    fig, axes = plt.subplots(1, 2, figsize=(9, 4.2))
+    for ax, geoms, title in [
+        (axes[0], r.kept, f"result.kept: {len(r.kept)} objects"),
+        (axes[1], flat, f"flatten_geometries(result.kept): {len(flat)} objects"),
+    ]:
+        for i, geom in enumerate(geoms):
+            _draw(ax, [geom], GROUP_COLORS[i % len(GROUP_COLORS)], 3)
+        _frame(ax, title, bounds=(-0.4, -1.2, 2.4, 3.2))
     _save(fig, "groups.png")
 
 

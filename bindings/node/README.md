@@ -31,6 +31,22 @@ npm run build
 npm test   # node --test test/
 ```
 
+## Publishing
+
+CI builds one addon per platform (`bindings-<target>` artifacts). Each goes
+into its own npm package (`npm/<platform>/`); the main `deoverlap` package
+lists them as optional dependencies, so npm installs only the matching one.
+
+```bash
+cd bindings/node
+npm ci && npm run build          # generates index.js / index.d.ts
+gh run download <run-id> -p 'bindings-*' -D artifacts
+npm run artifacts                # copies each .node into npm/<platform>/
+npm publish                      # publishes npm/* first, then deoverlap
+```
+
+After a version bump, `npm run version` updates the `npm/*` packages.
+
 ## API
 
 ```javascript

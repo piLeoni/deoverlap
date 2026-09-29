@@ -1,8 +1,8 @@
-"""vpype plugin: proximity-aware de-overlap for plotter paths.
+"""vpype plugin: de-overlap plotter paths.
 
-Replaces coarse endpoint-only ``deduplicate``. Each kept stroke owns a
-corridor of radius ``tolerance``; later strokes are cropped or dropped where
-they fall inside that corridor. Layers are processed independently.
+Each kept stroke owns a corridor of radius ``tolerance``; later strokes are
+cropped or dropped where they fall inside that corridor. Layers are processed
+independently.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ def _layer_from_geoms(geoms) -> vp.LineCollection:
     "--self-overlap",
     is_flag=True,
     default=False,
-    help="Let a path overlap itself, e.g. the two sides of a thin outline.",
+    help="Let parts of one path cut each other, e.g. the two sides of a thin outline.",
 )
 @click.option(
     "-m",
@@ -117,9 +117,8 @@ def deoverlap_cmd(
 ) -> vp.Document:
     """Remove strokes that run on top of each other.
 
-    Unlike endpoint-only deduplicate, this cuts (or drops) paths that run
-    within TOLERANCE of a kept path — the case that bleeds on a plotter.
-    Layers are handled one at a time.
+    Paths that run within TOLERANCE of a kept path are cut (or dropped), so
+    the same area is not drawn twice. Layers are handled one at a time.
     """
     layer_ids = vpype_cli.multiple_to_layer_ids(layer, document)
     new_document = document.empty_copy()

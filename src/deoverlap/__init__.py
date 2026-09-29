@@ -1,4 +1,4 @@
-"""De-overlap Shapely geometries that sit within a tolerance of each other."""
+"""De-overlap vector strokes to prevent overdrawing."""
 
 __version__ = "4.2.0"
 

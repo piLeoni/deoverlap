@@ -51,3 +51,5 @@ bindings/node/node_modules/
 bindings/node/index.js
 bindings/node/index.d.ts
 bindings/node/*.node
+bindings/node/artifacts/
+bindings/node/npm/*/*.node

@@ -1,35 +1,27 @@
 # Deoverlap
 
-De-overlap Shapely geometries that sit within a tolerance of each other.
+De-overlap vector strokes to prevent overdrawing.
 
 Source, examples and issues: [github.com/piLeoni/deoverlap](https://github.com/piLeoni/deoverlap)
 
-The common case is pen-plotter work: two strokes closer than a pen width
-visually merge on paper, so only one of them should keep the ink. Unlike
-endpoint-only “deduplicate” tools, this library builds a **corridor** around
-each kept stroke and crops (or drops) later strokes that fall inside it.
+Where strokes run on top of each other, deoverlap keeps one and cuts the
+others back, so no area gets drawn twice. One **Rust** engine, three front
+ends: a **Python** library (Shapely geometries), a **vpype** command for SVG
+plotter pipelines, and **Node.js** bindings over flat coordinate buffers.
 
-![A city map at pen width: before, what deoverlap removed, after](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_zoom.png)
+![Before, removed, and after on a real map at pen width (OpenStreetMap)](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_zoom.png)
 
-Oakland's MacArthur Maze: 1473 OpenStreetMap paths on a 100 mm card, at a
-tolerance equal to the 0.5 mm pen. In this zoom (a half-centimetre of the
-card) doubled carriageways and junctions darken where the pen passes twice
-(left); deoverlap removes the red strokes (middle) and the ink becomes one
-even layer (right). In every figure blue is kept, red is removed, and the thin
-orange outline is the corridor mask. The whole card, and the exact commands,
-are in [A real map](#a-real-map-the-macarthur-maze) below.
+A street map drawn with a 0.5 mm pen: before (left), what was cut away
+(middle), after (right). Blue is kept, red is removed, orange is the corridor
+mask — the same colours in every figure below.
+
+## Quick start
+
+### Python
 
 ```bash
 pip install deoverlap
-# with the vpype command:
-pip install "deoverlap[vpype]"
 ```
-
-Node.js bindings (same Rust engine, flat coordinate buffers): see
-[`bindings/node/README.md`](bindings/node/README.md) and
-[`docs/WIRE_FORMAT.md`](docs/WIRE_FORMAT.md).
-
-## Quick start
 
 ```python
 from shapely.geometry import LineString
@@ -48,23 +40,38 @@ print("wholly removed:", result.wholly_removed)
 `tolerance` is a distance in the same units as the geometries: strokes closer
 than this to a kept stroke are cut. For a plotter, use the pen width.
 
-The Python function and the vpype command take the same options with the same
-defaults; `--self-overlap` on the command line is `self_overlap=True` in Python.
+### vpype
+
+```bash
+pip install "deoverlap[vpype]"
+vpype read map.svg deoverlap -t 0.1mm -l 1,2,3 write out.svg
+```
+
+Same options and defaults as the Python function (`--self-overlap` ↔
+`self_overlap=True`). Full flag list: [vpype plugin](#vpype-plugin).
+
+### Node.js
+
+```bash
+cd bindings/node && npm install && npm run build
+```
+
+Flat buffers and API: [`bindings/node/README.md`](https://github.com/piLeoni/deoverlap/blob/main/bindings/node/README.md),
+[`docs/WIRE_FORMAT.md`](https://github.com/piLeoni/deoverlap/blob/main/docs/WIRE_FORMAT.md).
 
 ## How it works
 
-Geometries are processed in priority order. Each kept stroke gets a corridor
-of radius `tolerance` around it, and every later stroke loses the parts that
-fall inside a corridor.
+Geometries are processed one at a time, in priority order. Each kept stroke
+gets a corridor of radius `tolerance` around it, and every later stroke loses
+the parts that fall inside a corridor. The options below decide which stroke
+goes first (`prefer`), which nearby strokes count as overlapping (`angle`),
+and what to do with the leftovers of a cut stroke (`drop`, `min_length`).
 
 ![Tangent circles and a line: the corridor mask (orange) around kept strokes (blue) crops the overlapping arcs (red)](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/hero.png)
 
-In every figure, blue is kept, red is removed and the thin orange outline is
-the corridor mask. They are rendered by `examples/make_figures.py`.
-
 ## Prefer — which stroke wins
 
-When two corridors collide, priority is explicit:
+The processing order decides which of two overlapping strokes is kept whole:
 
 | `prefer=` | Behaviour |
 |---|---|
@@ -80,8 +87,8 @@ when processing order changes.
 ## Angle — which strokes count as overlapping
 
 Two strokes overlap only where their directions differ by at most `angle`
-degrees (default 30). A plotter redrawing a crossing is usually fine; the pain
-is parallel near-coincident runs. `angle=90` counts every nearby stroke, so
+degrees (default 30). Parallel near-coincident runs are cropped; shallow
+crossings are often left alone. `angle=90` counts every nearby stroke, so
 crossings get cut too.
 
 ```python
@@ -106,32 +113,31 @@ whole instead of leaving stubs.
 
 ![drop=None keeps the protruding stub, drop=0.5 discards the mostly covered stroke](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/crop_vs_drop.png)
 
+A dropped stroke has no entry in `kept_parts`; its index is listed in
+`wholly_removed`, and `removed_parts` holds the original geometry unchanged.
+
 `min_length=` drops pieces shorter than that after cutting (points are never
 removed by it).
 
 ## Split pieces stay one object
 
-When a ring is cut by a corridor it becomes two arcs. Those arcs are returned
-as **one** multipart geometry under the original input index — a logical
-stroke, not two anonymous objects:
+A ring crossed by another stroke is cut into two arcs. They come back as
+**one** `MultiLineString` under the ring's input index, not as two anonymous
+pieces:
 
 ```python
-ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
 cutter = LineString([(1, -1), (1, 3)])
+ring = LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
 result = deoverlap([cutter, ring], 0.15, prefer="first", angle=90)
 
-result.kept_parts[1]  # MultiLineString of both arcs
+result.kept_parts[1]  # MultiLineString with both arcs
 ```
 
-Use `flatten_geometries(result.kept)` for a flat list of primitive pieces.
+One colour per object. On the left, both halves of the ring are one entry of
+`result.kept`; on the right, `flatten_geometries(result.kept)` splits them
+into separate single parts, when that is what you need:
 
-The grouping survives the other way too. With
-[`drop=0.5`](#crop-or-drop) and the cutter placed far enough left to take most
-of the ring, no fragment is kept at all: `kept_parts` simply has no entry for
-it, while `removed_parts[1]` hands back the original ring, nothing re-stitched
-from the pieces:
-
-![A ring cut on the right stays one multipart entry in result.kept; with drop=0.5 it goes whole into result.removed_parts](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/groups.png)
+![The cut ring is one object in result.kept (same colour), and two after flatten_geometries](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/groups.png)
 
 ## Self-overlap
 
@@ -146,6 +152,9 @@ like a hairpin.
 
 ## Multi-stage with a carried mask
 
+To process batches separately (for example, main roads first, then side
+streets), pass the previous result as `mask`:
+
 ```python
 r1 = deoverlap(batch1, 0.1)
 r2 = deoverlap(batch2, 0.1, mask=r1)  # or mask=r1.mask
@@ -159,53 +168,54 @@ Stage 2 is clipped against everything stage 1 kept.
 
 | Field | Meaning |
 |---|---|
-| `kept` | Surviving geometries, one per input that kept some ink |
+| `kept` | Surviving geometries, one per input that kept something |
 | `removed` | Cut pieces, flattened (if `keep_duplicates=True`) |
-| `kept_parts` | `{original_index: geometry}` |
-| `removed_parts` | `{original_index: geometry}` (if `keep_duplicates=True`) |
-| `wholly_removed` | Indices removed entirely |
-| `mask` | Corridor polygons (for the next stage) |
+| `kept_parts` | `{input_index: geometry}` |
+| `removed_parts` | `{input_index: geometry}` (if `keep_duplicates=True`) |
+| `wholly_removed` | Indices of inputs with nothing kept |
+| `mask` | Corridor polygons, for a next stage |
 
 ## Performance
 
-The engine is written in Rust and ships as a compiled extension, so
-`pip install` needs no Rust toolchain on the supported platforms. It builds no
-polygons: the corridor of a straight edge is a capsule, and the part of
-another edge inside it is computed exactly. On the MacArthur Maze map below
-(1473 paths) a run takes about 30 ms.
+The Python wheel is a compiled extension (no Rust toolchain at install time).
+The engine builds no polygons: the corridor of a straight edge is a capsule,
+and the part of another edge inside it is computed exactly. On the MacArthur
+Maze map below (1473 paths) a run takes about 30 ms.
 
 ## vpype plugin
 
-Installing `deoverlap[vpype]` registers a `deoverlap` command that is
-**layer-safe** (honours `-l`) and uses corridor proximity rather than
-endpoint-only matching:
-
-```bash
-pip install "deoverlap[vpype]"
-vpype read map.svg deoverlap -t 0.1mm -l 1,2,3 write out.svg
-```
+`pip install "deoverlap[vpype]"` registers a `deoverlap` command. Each layer
+is processed on its own; `-l` picks which ones.
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `-t`, `--tolerance` | `0.1mm` | Corridor radius, usually the pen width |
 | `--prefer` | `longest` | `longest` \| `first` \| `shortest` |
 | `--angle` | `30` | Max direction difference in degrees; `90` cuts crossings too |
-| `--self-overlap` | off | Let a path overlap itself |
+| `--self-overlap` | off | Let parts of one path cut each other |
 | `-m`, `--min-length` | `0mm` | Drop pieces shorter than this after cutting |
 | `--drop` | off | Discard a stroke when more than this fraction would be cut |
 | `-k`, `--keep-duplicates` | off | Keep removed pieces in a separate layer |
 | `-p`, `--progress-bar` | off | Display a progress bar |
 | `-l`, `--layer` | `all` | Target layer(s) |
 
-`-t`, `-l`, `-k` and `-p` mean the same as in vpype's own commands and the
-`deduplicate` plugin; `-m` matches `vpype filter`.
+`-t`, `-l`, `-k` and `-p` follow the usual vpype conventions; `-m` matches
+`vpype filter`.
+
+Chain the command to give each layer its own settings:
+
+```bash
+vpype read map.svg \
+  deoverlap -t 0.1mm -l 3,4 \
+  deoverlap -t 0.15mm --self-overlap -l 5 \
+  write opt.svg
+```
 
 ### Walkthrough with the bundled example
 
 `examples/parallel_strokes.svg` is a tiny card with two near-parallel pairs
 (0.05 mm apart), one deliberate cross, and a dual-kerb rectangle drawn as a
-**single** polyline. No OSM dump required — open it, run the commands, open the
-outputs side by side.
+**single** polyline. Run the commands and open the outputs side by side.
 
 ```bash
 # Inspect path count / drawn length
@@ -251,6 +261,11 @@ vpype read examples/macarthur_maze.svg \
 vpype read examples/out_maze.svg stat
 ```
 
+The whole card after this run; the dashed box is the zoom shown at the
+[top of this page](#deoverlap):
+
+![The whole 100 mm card: kept in blue, removed in red; dashed box is the zoom at the top](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/osm_map.png)
+
 `--angle 90` is the maximum: every nearby stroke counts, whatever its
 direction. Side streets stop where the main road's ink begins, and at crossings
 the shorter path is split around the longer one. The gap is exactly the other
@@ -260,11 +275,6 @@ dark spot of doubled ink.
 Cutting leaves fragments; almost every piece under 1 mm on this card is one.
 `-m 1mm` (two pen widths) drops them. The path count goes from 1473 to 860 and
 the drawn length drops by 35%.
-
-The [images at the top of this page](#deoverlap) are this run, zoomed to one
-corner of the card. No OSM dump is needed to reproduce them: they are rendered
-by `examples/make_figures.py` from the card committed at
-`examples/macarthur_maze.svg`.
 
 With the default `--angle 30` crossings are left alone: parallel runs are
 still merged, but both roads are drawn through every junction, and the card
@@ -282,19 +292,11 @@ python examples/fetch_osm_example.py --lat 51.5074 --lon -0.1278 --radius 1500 \
   --out examples/my_place.svg
 ```
 
+All README figures are rendered from the committed files by
+`python examples/make_figures.py` (needs `matplotlib`).
+
 Map data © OpenStreetMap contributors, available under the
 [ODbL](https://www.openstreetmap.org/copyright).
-
-### Different settings per layer
-
-Chain the command to give each layer its own settings:
-
-```bash
-vpype read map.svg \
-  deoverlap -t 0.1mm -l 3,4 \
-  deoverlap -t 0.15mm --self-overlap -l 5 \
-  write opt.svg
-```
 
 ## API
 
