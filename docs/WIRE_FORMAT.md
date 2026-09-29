@@ -16,7 +16,7 @@ Implementation and validation: `core/src/flat.rs`.
 
 | Field | Meaning |
 |---|---|
-| `capsules` | `{ a: [x,y], b: [x,y], radius }` corridors from kept strokes |
+| `capsules` | `{ ax, ay, bx, by, radius }` corridors from kept strokes |
 | `polygons` | `{ exterior: f64[], interiors: f64[][] }` clip regions |
 
 Python: pass `mask=previous_result` to reuse capsules without building Shapely

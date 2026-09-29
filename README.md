@@ -33,8 +33,8 @@ geoms = [
 ]
 result = deoverlap(geoms, tolerance=0.1)
 
-print(len(result.kept), "surviving geometries")
-print("wholly removed:", result.wholly_removed)
+print(len(result.kept), "surviving geometries")  # 2: the second is cropped
+print("wholly removed:", result.wholly_removed)  # []
 ```
 
 `tolerance` is a distance in the same units as the geometries: strokes closer
@@ -47,16 +47,17 @@ pip install "deoverlap[vpype]"
 vpype read map.svg deoverlap -t 0.1mm -l 1,2,3 write out.svg
 ```
 
-Same options and defaults as the Python function (`--self-overlap` ↔
-`self_overlap=True`). Full flag list: [vpype plugin](#vpype-plugin).
+Same options as the Python function (`--self-overlap` ↔ `self_overlap=True`);
+only the tolerance has a default here, `0.1mm`. Full flag list:
+[vpype plugin](#vpype-plugin).
 
 ### Node.js
 
 ```bash
-cd bindings/node && npm install && npm run build
+npm install deoverlap
 ```
 
-Flat buffers and API: [`bindings/node/README.md`](https://github.com/piLeoni/deoverlap/blob/main/bindings/node/README.md),
+Flat buffers, API and building from source: [`bindings/node/README.md`](https://github.com/piLeoni/deoverlap/blob/main/bindings/node/README.md),
 [`docs/WIRE_FORMAT.md`](https://github.com/piLeoni/deoverlap/blob/main/docs/WIRE_FORMAT.md).
 
 ## How it works
@@ -87,12 +88,12 @@ when processing order changes.
 ## Angle — which strokes count as overlapping
 
 Two strokes overlap only where their directions differ by at most `angle`
-degrees (default 30). Parallel near-coincident runs are cropped; shallow
-crossings are often left alone. `angle=90` counts every nearby stroke, so
+degrees (default 30). Parallel runs and shallow merges are cropped; crossings
+steeper than that are left alone. `angle=90` counts every nearby stroke, so
 crossings get cut too.
 
 ```python
-result = deoverlap(geoms, tolerance=0.1, angle=30)
+result = deoverlap(geoms, tolerance=0.1, angle=90)  # cut crossings too
 ```
 
 Directions are compared **locally, edge by edge**, so a curving ramp is cropped
@@ -113,8 +114,9 @@ whole instead of leaving stubs.
 
 ![drop=None keeps the protruding stub, drop=0.5 discards the mostly covered stroke](https://raw.githubusercontent.com/piLeoni/deoverlap/main/docs/img/crop_vs_drop.png)
 
-A dropped stroke has no entry in `kept_parts`; its index is listed in
-`wholly_removed`, and `removed_parts` holds the original geometry unchanged.
+A dropped stroke has no entry in `kept_parts` and its index is listed in
+`wholly_removed`. With `keep_duplicates=True`, `removed_parts` holds the
+original geometry unchanged.
 
 `min_length=` drops pieces shorter than that after cutting (points are never
 removed by it).

@@ -1,34 +1,85 @@
 # deoverlap (Node)
 
-Native Node.js bindings for the Rust `deoverlap-core` engine. This path is
-**separate from the Python wheel** (Shapely API); it does not slow down
-`pip install deoverlap`.
+De-overlap vector strokes to prevent overdrawing. Where strokes run on top of
+each other, one is kept and the others are cut back, so no area gets drawn
+twice. Native bindings for the Rust engine of
+[deoverlap](https://github.com/piLeoni/deoverlap), which also ships as a
+Python library and a vpype command; see its README for figures and a full
+explanation of the options.
 
-## Wire format
+```bash
+npm install deoverlap
+```
 
-Each geometry is a plain object:
+Prebuilt for Linux (x64, arm64, glibc), macOS (x64, arm64) and Windows (x64).
+
+## Usage
+
+```javascript
+const { deoverlap } = require("deoverlap");
+
+const result = deoverlap(
+  [
+    { coords: [0, 0, 2, 0], offsets: [0, 4], kinds: [0] },
+    { coords: [1, 0.05, 3, 0.05], offsets: [0, 4], kinds: [0] },
+  ],
+  0.1, // tolerance: corridor radius, in the units of the coordinates
+  {
+    prefer: "longest",     // longest | first | shortest
+    angle: 30,             // degrees, 0–90; 90 cuts crossings too
+    selfOverlap: false,
+    minLength: 0,
+    drop: undefined,       // fraction 0–1; undefined always crops
+    keepDuplicates: false,
+    mask: undefined,       // result.mask of a previous run
+  }
+);
+```
+
+All options are optional; the values above are the defaults.
+
+## Geometries
+
+Each geometry is a plain object of flat buffers:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `coords` | `number[]` | `[x0, y0, x1, y1, …]` |
-| `offsets` | `number[]` | Start of each part in **f64 units**, plus a final entry `coords.length` |
-| `kinds` | `number[]` | `0` = line, `1` = point |
+| `offsets` | `number[]` | Start of each part in `coords`, plus a final entry `coords.length` |
+| `kinds` | `number[]` | Per part: `0` = line, `1` = point |
 
-Multi-stage runs reuse the engine mask (capsules + polygons), not rebuilt
-buffers:
+A multipart geometry has several parts; the two-point line above is
+`offsets: [0, 4]`. Convert to and from your geometry library at the edges;
+this package has no GeoJSON dependency. Full spec:
+[`docs/WIRE_FORMAT.md`](https://github.com/piLeoni/deoverlap/blob/main/docs/WIRE_FORMAT.md).
+
+## Result
+
+| Field | Meaning |
+|---|---|
+| `kept` | `{ index, geometry }` per input that kept something; pieces of one input stay one geometry |
+| `whollyRemoved` | Indices of inputs with nothing kept |
+| `removed` | Cut pieces (with `keepDuplicates`) |
+| `removedParts` | `{ index, geometry }` per input, what it lost; no `geometry` if nothing (with `keepDuplicates`) |
+| `mask` | `{ capsules, polygons }` corridors, for a next stage |
+
+To process batches separately, pass the previous mask:
 
 ```javascript
 const r1 = deoverlap(batch1, 0.1);
 const r2 = deoverlap(batch2, 0.1, { mask: r1.mask });
 ```
 
-## Build
+## Building from source
+
+Needs a Rust toolchain.
 
 ```bash
-cd bindings/node
+git clone https://github.com/piLeoni/deoverlap
+cd deoverlap/bindings/node
 npm install
 npm run build
-npm test   # node --test test/
+npm test
 ```
 
 ## Publishing
@@ -46,31 +97,3 @@ npm publish                      # publishes npm/* first, then deoverlap
 ```
 
 After a version bump, `npm run version` updates the `npm/*` packages.
-
-## API
-
-```javascript
-const { deoverlap } = require("deoverlap");
-
-const result = deoverlap(
-  [
-    { coords: [0, 0, 2, 0], offsets: [0, 4], kinds: [0] },
-    { coords: [1, 0.05, 3, 0.05], offsets: [0, 4], kinds: [0] },
-  ],
-  0.1,
-  {
-    prefer: "first",       // longest | first | shortest
-    angle: 90,             // 0–90
-    selfOverlap: false,
-    minLength: 0,
-    drop: undefined,
-    keepDuplicates: false,
-    mask: undefined,       // { capsules, polygons } from a prior result
-  }
-);
-
-// result.kept, result.whollyRemoved, result.mask, result.removed, result.removedParts
-```
-
-Convert to/from your JS geometry library at the edges; there is no GeoJSON
-dependency in this package.

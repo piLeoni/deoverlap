@@ -214,8 +214,8 @@ def deoverlap(
             (input order) or ``"shortest"``.
         angle: Strokes overlap only where their local bearings differ by at
             most this many degrees (0–90); 90 cuts crossings too.
-        self_overlap: Let a path overlap itself, e.g. the two sides of a thin
-            outline. Neighbouring edges never cut each other unless the path
+        self_overlap: Let parts of one path cut each other, e.g. the two
+            sides of a thin outline. Neighbouring edges never cut each other unless the path
             folds back on itself.
         min_length: Drop surviving pieces shorter than this.
         drop: Discard a whole stroke when more than this fraction (0–1) of
